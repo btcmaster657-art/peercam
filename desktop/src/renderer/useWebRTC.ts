@@ -44,6 +44,7 @@ export function useWebRTC() {
 
   const wsRef          = useRef<WebSocket | null>(null)
   const peerRef        = useRef<Instance | null>(null)
+  const sessionIdRef   = useRef<string | null>(null)   // track active session to ignore duplicate triggers
   const rafRef         = useRef<number>(0)
   const lastFrameRef   = useRef<number>(0)
   const frameBusyRef   = useRef<boolean>(false)
@@ -238,9 +239,22 @@ export function useWebRTC() {
           break
 
         case 'session_created':
+          // Session matched — wait for agent_session_ready before starting WebRTC
+          // (provider may not have camera ready yet)
+          log('INFO', `session_created sessionId=${(msg.sessionId as string).slice(0,8)} — waiting for provider ready`)
+          sessionIdRef.current = msg.sessionId as string
+          break
+
         case 'agent_session_ready': {
-          log('INFO', `session ready sessionId=${(msg.sessionId as string).slice(0,8)} — creating initiator peer`)
-          try { buildPeer(ws, msg.sessionId as string, true) }
+          const sid = msg.sessionId as string
+          // Guard: only build the peer once per session
+          if (peerRef.current && !peerRef.current.destroyed) {
+            log('INFO', `duplicate agent_session_ready for sessionId=${sid.slice(0,8)} — ignoring`)
+            break
+          }
+          sessionIdRef.current = sid
+          log('INFO', `agent ready sessionId=${sid.slice(0,8)} — creating initiator peer`)
+          try { buildPeer(ws, sid, true) }
           catch { /* already logged in buildPeer */ }
           break
         }
@@ -294,6 +308,7 @@ export function useWebRTC() {
           stopFramePipe()
           if (peerRef.current && !peerRef.current.destroyed) peerRef.current.destroy()
           peerRef.current = null
+          sessionIdRef.current = null
           updateStatus('reconnecting')
           setError(`Reconnecting… (attempt ${msg.attempt}/${msg.maxAttempts})`)
           break
@@ -303,6 +318,7 @@ export function useWebRTC() {
           stopFramePipe()
           if (peerRef.current && !peerRef.current.destroyed) peerRef.current.destroy()
           peerRef.current = null
+          sessionIdRef.current = null
           if (msg.reason === 'no_provider_available') {
             setError('Provider disconnected and could not reconnect')
             updateStatus('error')
@@ -345,6 +361,7 @@ export function useWebRTC() {
   const disconnect = useCallback(() => {
     log('INFO', 'disconnect called')
     stopFramePipe()
+    sessionIdRef.current = null
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach(t => t.stop())
       localStreamRef.current = null
