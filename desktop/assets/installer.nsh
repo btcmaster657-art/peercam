@@ -40,7 +40,7 @@
 ; ── Remove all PeerCam data and registry artifacts ───────────────────────────
 !macro CleanPeerCamArtifacts
   ; Unregister virtual camera DLL before removing files
-  nsExec::ExecToLog '$SYSDIR\regsvr32.exe /s /u "$INSTDIR\PeerCamVCam.dll"'
+  nsExec::ExecToLog '$SYSDIR\regsvr32.exe /s /u "$INSTDIR\resources\PeerCamVCam.dll"'
 
   ; Electron userData (config, logs, cache)
   RMDir /r "$APPDATA\peercam-desktop"
@@ -80,7 +80,7 @@
   ${EndIf}
   ; Register the virtual camera DirectShow filter — makes it appear as a real webcam
   DetailPrint "Registering PeerCam Virtual Camera..."
-  nsExec::ExecToLog '$SYSDIR\regsvr32.exe /s "$INSTDIR\PeerCamVCam.dll"'
+  nsExec::ExecToLog '$SYSDIR\regsvr32.exe /s "$INSTDIR\resources\PeerCamVCam.dll"'
 !macroend
 
 ; ── customUnInstall — full cleanup on uninstall ───────────────────────────────

@@ -1,6 +1,6 @@
 {
   "name": "peercam-desktop",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "description": "PeerCam Desktop — Use any PC as a virtual webcam over WebRTC",
   "author": "PeerCam",
   "private": true,
@@ -54,6 +54,12 @@
     "asarUnpack": [
       "native/build/**/*",
       "native/vcam_filter/PeerCamVCam.dll"
+    ],
+    "extraResources": [
+      {
+        "from": "native/vcam_filter/PeerCamVCam.dll",
+        "to": "PeerCamVCam.dll"
+      }
     ],
     "win": {
       "target": "nsis",

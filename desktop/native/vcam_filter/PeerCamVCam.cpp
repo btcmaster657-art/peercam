@@ -25,8 +25,8 @@ DEFINE_GUID(CLSID_PeerCamVCam,
     0x8c, 0x7d, 0x9e, 0x0f, 0x1a, 0x2b, 0x3c, 0x4d);
 
 static const WCHAR FILTER_NAME[] = L"PeerCam Virtual Camera";
-static const int   DEFAULT_WIDTH  = 1280;
-static const int   DEFAULT_HEIGHT = 720;
+static const int   DEFAULT_WIDTH  = 640;
+static const int   DEFAULT_HEIGHT = 480;
 static const int   DEFAULT_FPS    = 30;
 
 // ── RGBA → YUY2 conversion ────────────────────────────────────────────────────
@@ -70,12 +70,21 @@ public:
 
     HRESULT GetMediaType(CMediaType* pmt) override {
         CAutoLock lock(m_pFilter->pStateLock());
+        // Read actual dimensions from shared memory if available
+        if (m_pShm) {
+            const PeerCamShmHeader* hdr = reinterpret_cast<const PeerCamShmHeader*>(m_pShm);
+            if (hdr->width > 0 && hdr->width <= PEERCAM_MAX_WIDTH &&
+                hdr->height > 0 && hdr->height <= PEERCAM_MAX_HEIGHT) {
+                m_width  = (int)hdr->width;
+                m_height = (int)hdr->height;
+            }
+        }
         VIDEOINFO* pvi = (VIDEOINFO*)pmt->AllocFormatBuffer(sizeof(VIDEOINFO));
         if (!pvi) return E_OUTOFMEMORY;
         ZeroMemory(pvi, sizeof(VIDEOINFO));
         pvi->bmiHeader.biSize        = sizeof(BITMAPINFOHEADER);
         pvi->bmiHeader.biWidth       = m_width;
-        pvi->bmiHeader.biHeight      = -m_height; // top-down
+        pvi->bmiHeader.biHeight      = -m_height;
         pvi->bmiHeader.biPlanes      = 1;
         pvi->bmiHeader.biBitCount    = 16;
         pvi->bmiHeader.biCompression = MAKEFOURCC('Y','U','Y','2');
@@ -92,7 +101,8 @@ public:
     HRESULT DecideBufferSize(IMemAllocator* pAlloc, ALLOCATOR_PROPERTIES* pReq) override {
         ALLOCATOR_PROPERTIES actual;
         pReq->cBuffers = 2;
-        pReq->cbBuffer = m_width * m_height * 2;
+        // Allocate for max resolution so resolution changes never overflow
+        pReq->cbBuffer = PEERCAM_MAX_WIDTH * PEERCAM_MAX_HEIGHT * 2;
         return pAlloc->SetProperties(pReq, &actual);
     }
 
@@ -104,18 +114,15 @@ public:
         // Wait up to 50ms for a new frame, then deliver last frame (keeps stream alive)
         if (m_hEvent) WaitForSingleObject(m_hEvent, 50);
 
-        if (m_pShm) {
-            // Try to re-open if PeerCam just started
-            if (!m_hMapFile) {
-                m_hMapFile = OpenFileMappingA(FILE_MAP_READ, FALSE, PEERCAM_SHM_NAME);
-                if (m_hMapFile)
-                    m_pShm = MapViewOfFile(m_hMapFile, FILE_MAP_READ, 0, 0, PEERCAM_SHM_SIZE);
-            }
-        } else {
-            // Try to open shared memory — PeerCam may have started after filter loaded
+        // Try to open shared memory if not yet open
+        if (!m_pShm) {
             m_hMapFile = OpenFileMappingA(FILE_MAP_READ, FALSE, PEERCAM_SHM_NAME);
             if (m_hMapFile)
                 m_pShm = MapViewOfFile(m_hMapFile, FILE_MAP_READ, 0, 0, PEERCAM_SHM_SIZE);
+            if (!m_hEvent)
+                m_hEvent = OpenEventA(SYNCHRONIZE, FALSE, PEERCAM_EVENT_NAME);
+            if (!m_hMutex)
+                m_hMutex = OpenMutexA(SYNCHRONIZE, FALSE, PEERCAM_MUTEX_NAME);
         }
 
         if (m_pShm) {
@@ -123,14 +130,19 @@ public:
             const PeerCamShmHeader* hdr = reinterpret_cast<const PeerCamShmHeader*>(m_pShm);
             DWORD w = hdr->width, h = hdr->height;
             if (w > 0 && h > 0 && w <= PEERCAM_MAX_WIDTH && h <= PEERCAM_MAX_HEIGHT) {
-                if ((int)w != m_width || (int)h != m_height) {
-                    m_width = (int)w; m_height = (int)h;
-                    // Reconnect to update media type — simplified: just use new dims
+                // Only render if dimensions match what we negotiated — avoids stride corruption
+                // If they differ, output black and let the next GetMediaType call pick up new dims
+                if ((int)w == m_width && (int)h == m_height) {
+                    const BYTE* rgba = PeerCamPixelData(const_cast<void*>(m_pShm));
+                    size_t needed = (size_t)w * h * 2;
+                    if ((long)needed <= cbData)
+                        RgbaToYuy2(rgba, pData, w, h);
+                } else {
+                    // Resolution changed — output black, update dims for next negotiation
+                    m_width  = (int)w;
+                    m_height = (int)h;
+                    ZeroMemory(pData, cbData);
                 }
-                const BYTE* rgba = PeerCamPixelData(const_cast<void*>(m_pShm));
-                size_t needed = (size_t)w * h * 2;
-                if ((long)needed <= cbData)
-                    RgbaToYuy2(rgba, pData, w, h);
             }
             if (m_hMutex) ReleaseMutex(m_hMutex);
         } else {

@@ -459,18 +459,17 @@ export default function App() {
         {status === 'connected' && role === 'requester' && (
           <>
             {vcamOk === true && (
-              <p style={s.hint}>Virtual camera active. Select <strong style={{ color: '#f4f4f5' }}>OBS Virtual Camera</strong> in Zoom, Teams, OBS, or any webcam app.</p>
+              <p style={s.hint}>Virtual camera active — select <strong style={{ color: '#f4f4f5' }}>PeerCam Virtual Camera</strong> in Zoom, Teams, or any app.</p>
             )}
             {vcamOk === false && (
-              <div style={s.obsWarn}>
-                <p style={{ fontWeight: 600, color: '#fbbf24', marginBottom: 4 }}>⚠ Virtual camera not active</p>
-                <p>OBS Virtual Camera is not running. To see the feed in other apps:</p>
+              <div style={s.warnBox}>
+                <p style={{ fontWeight: 600, color: '#fbbf24', marginBottom: 4 }}>⚠ Virtual camera unavailable</p>
+                <p>PeerCam Virtual Camera could not start. Try:</p>
                 <ol style={{ paddingLeft: 16, marginTop: 6, display: 'flex', flexDirection: 'column', gap: 3 }}>
-                  <li>Open <strong>OBS Studio</strong></li>
-                  <li>Click <strong>Tools → Start Virtual Camera</strong></li>
-                  <li>Select <strong>OBS Virtual Camera</strong> in your app</li>
+                  <li>Reinstall PeerCam — the virtual camera driver registers during install</li>
+                  <li>Run the installer as Administrator if registration failed</li>
                 </ol>
-                <p style={{ marginTop: 6, color: '#71717a' }}>The video feed is connected — OBS just needs to be started to expose it as a webcam device.</p>
+                <p style={{ marginTop: 6, color: '#71717a' }}>The video feed is still connected and recording locally.</p>
               </div>
             )}
             {vcamOk === null && (
@@ -532,7 +531,7 @@ const s: Record<string, React.CSSProperties> = {
   logClear:      { background: 'none', border: 'none', color: '#3f3f46', fontSize: 11, cursor: 'pointer', padding: 0 },
   logBody:       { maxHeight: 150, overflowY: 'auto', padding: '6px 10px', display: 'flex', flexDirection: 'column', gap: 2 },
   logLine:       { fontSize: 10, fontFamily: 'monospace', lineHeight: 1.4, wordBreak: 'break-all' },
-  obsWarn:       { background: '#1c1400', border: '1px solid #78350f', borderRadius: 8, padding: '12px 14px', fontSize: 12, color: '#d4d4d8', lineHeight: 1.6 },
+  warnBox:       { background: '#1c1400', border: '1px solid #78350f', borderRadius: 8, padding: '12px 14px', fontSize: 12, color: '#d4d4d8', lineHeight: 1.6 },
   codeSkeleton:  { width: 180, height: 36, borderRadius: 6, background: 'linear-gradient(90deg,#27272a 25%,#3f3f46 50%,#27272a 75%)', backgroundSize: '200% 100%', animation: 'shimmer 1.4s infinite' },
   preview:       { width: '100%', borderRadius: 8, background: '#18181b', aspectRatio: '16/9', objectFit: 'cover' },
   fsExit:        { position: 'fixed', top: 12, right: 12, zIndex: 9999, background: 'rgba(0,0,0,0.7)', color: '#f4f4f5', border: '1px solid #3f3f46', borderRadius: 6, padding: '6px 12px', fontSize: 12, cursor: 'pointer', backdropFilter: 'blur(4px)' },

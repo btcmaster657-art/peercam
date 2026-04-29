@@ -130,7 +130,7 @@ export function useWebRTC() {
           log('INFO', 'vcam:start — ok=true, shared memory attached')
         } else {
           setVcamOk(false)
-          log('WARN', `vcam:start — ok=false error="${err ?? 'unknown'}" — OBS Virtual Camera not running?`)
+          log('WARN', `vcam:start — ok=false error="${err ?? 'unknown'}" — is PeerCam Virtual Camera driver registered?`)
         }
       })
       .catch(e => {
