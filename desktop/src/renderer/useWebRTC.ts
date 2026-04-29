@@ -287,6 +287,25 @@ export function useWebRTC() {
     log('INFO', `connect — role=${params.role} relay=${params.relayUrl} code=${params.joinCode} userId=${params.userId.slice(0,8)} dbSessionId=${params.dbSessionId ?? 'null'}`)
     paramsRef.current = params
     connectTimeRef.current = Date.now()
+
+    // Tear down any existing connection before opening a new one
+    if (wsRef.current) {
+      log('INFO', `connect — closing existing ws (readyState=${wsRef.current.readyState}) before reconnect`)
+      wsRef.current.onclose = null
+      wsRef.current.onerror = null
+      wsRef.current.onmessage = null
+      if (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING) {
+        wsRef.current.close(1000, 'reconnect')
+      }
+      wsRef.current = null
+    }
+    if (peerRef.current && !peerRef.current.destroyed) {
+      log('INFO', 'connect — destroying existing peer before reconnect')
+      peerRef.current.destroy()
+      peerRef.current = null
+    }
+    stopFramePipe()
+
     updateStatus('connecting')
     setError(null)
 

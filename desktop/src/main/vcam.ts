@@ -1,4 +1,5 @@
 import path from 'path'
+import { app } from 'electron'
 
 interface VCamAddon {
   start(): boolean
@@ -13,7 +14,11 @@ function loadAddon(): VCamAddon | null {
     console.log('[vcam] platform=darwin — native addon skipped')
     return null
   }
-  const addonPath = path.join(__dirname, '../../native/build/Release/vcam.node')
+  // Native addons cannot be loaded from inside an asar archive.
+  // process.resourcesPath points to the unpacked resources dir outside the asar.
+  const addonPath = app.isPackaged
+    ? path.join(process.resourcesPath, 'native/build/Release/vcam.node')
+    : path.join(__dirname, '../../native/build/Release/vcam.node')
   console.log(`[vcam] loading addon from ${addonPath}`)
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports

@@ -249,7 +249,7 @@ async function handleMessage(ws, msg) {
             const old = sessions.get(peer.sessionId)
             if (old) { old.providerId = ws.peerId; ws.sessionId = peer.sessionId; peer.sessionId = null }
           }
-          send(peer, { type: 'error', message: 'Replaced by new connection' })
+          log(ws.peerId.slice(0,8), `EVICTING old provider ${id.slice(0,8)} for userId=${auth.userId.slice(0,8)}`)
           peer.terminate()
           peers.delete(id)
         }
