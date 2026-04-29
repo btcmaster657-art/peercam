@@ -1,10 +1,10 @@
 import Link from 'next/link'
 
 const features = [
-  { icon: '📷', title: 'Any device as webcam', desc: 'Stream your phone or tablet camera directly into any app on your PC.' },
+  { icon: '🖥️', title: 'Any PC as webcam', desc: 'Stream another PC\'s camera directly into any app on your machine — no cables, no capture cards.' },
   { icon: '🔒', title: 'Peer-to-peer encrypted', desc: 'WebRTC end-to-end encryption — your video never touches our servers.' },
-  { icon: '⚡', title: 'Ultra-low latency', desc: 'Direct peer connection keeps lag under 100 ms on a local network.' },
-  { icon: '🖥️', title: 'Works everywhere', desc: 'Appears as a standard webcam in Zoom, Teams, OBS, and more.' },
+  { icon: '⚡', title: 'Ultra-low latency', desc: 'Direct peer connection keeps lag under 100 ms on a good network.' },
+  { icon: '📷', title: 'Works everywhere', desc: 'Appears as a standard webcam in Zoom, Teams, OBS, and any app that uses a camera.' },
 ]
 
 export default function LandingPage() {
@@ -22,11 +22,11 @@ export default function LandingPage() {
       {/* Hero */}
       <section className="flex flex-col items-center text-center px-6 pt-24 pb-16 max-w-3xl">
         <h1 className="text-5xl font-extrabold tracking-tight leading-tight mb-4">
-          Your phone is now<br />
+          Your PC is now<br />
           <span className="text-indigo-400">a virtual webcam</span>
         </h1>
         <p className="text-zinc-400 text-lg mb-8 max-w-xl">
-          PeerCam streams any camera to your Windows PC over WebRTC and injects it as a real DirectShow device — no cables, no drivers to hunt down.
+          PeerCam streams any PC&apos;s camera to your Windows machine over WebRTC and injects it as a real DirectShow device — share a 10-digit code, connect instantly.
         </p>
         <div className="flex gap-4 flex-wrap justify-center">
           <Link

@@ -6,7 +6,7 @@ primary_region = 'jnb'
 
 [env]
   PORT = '8080'
-  API_BASE = 'https://peercam.app'
+  API_BASE = 'https://peercam.vercel.app'
 
 [[services]]
   protocol = 'tcp'

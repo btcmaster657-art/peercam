@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: peercam-relay
+    runtime: node
+    rootDir: relay
+    buildCommand: npm install
+    startCommand: node relay.js
+    envVars:
+      - key: PORT
+        value: 8080
+      - key: API_BASE
+        value: https://peercam.vercel.app
+      - key: RELAY_SECRET
+        value: pm-secret-2024-yL1nO4qR
