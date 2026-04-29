@@ -1,0 +1,192 @@
+// PeerCamVCam.cpp
+// DirectShow virtual camera source filter.
+// Registers as "PeerCam Virtual Camera" in Windows.
+// Reads RGBA frames from shared memory written by vcam_win.cc,
+// converts to YUY2, and delivers to any DirectShow consumer.
+//
+// Build: cl /LD /O2 /EHsc PeerCamVCam.cpp ole32.lib oleaut32.lib
+//        strmiids.lib uuid.lib kernel32.lib user32.lib /Fe:PeerCamVCam.dll
+// Register: regsvr32 PeerCamVCam.dll
+// Unregister: regsvr32 /u PeerCamVCam.dll
+
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <dshow.h>
+#include <streams.h>
+#include <initguid.h>
+#include <uuids.h>
+#include <cstring>
+#include <cmath>
+#include "../peercam_shm.h"
+
+// {A5B3C2D1-E4F5-4A6B-8C7D-9E0F1A2B3C4D}
+DEFINE_GUID(CLSID_PeerCamVCam,
+    0xa5b3c2d1, 0xe4f5, 0x4a6b,
+    0x8c, 0x7d, 0x9e, 0x0f, 0x1a, 0x2b, 0x3c, 0x4d);
+
+static const WCHAR FILTER_NAME[] = L"PeerCam Virtual Camera";
+static const int   DEFAULT_WIDTH  = 1280;
+static const int   DEFAULT_HEIGHT = 720;
+static const int   DEFAULT_FPS    = 30;
+
+// ── RGBA → YUY2 conversion ────────────────────────────────────────────────────
+static void RgbaToYuy2(const BYTE* rgba, BYTE* yuy2, int width, int height) {
+    int pixels = width * height;
+    for (int i = 0; i < pixels; i += 2) {
+        const BYTE* p0 = rgba + i * 4;
+        const BYTE* p1 = rgba + (i + 1) * 4;
+        BYTE y0 = (BYTE)(0.299f*p0[0] + 0.587f*p0[1] + 0.114f*p0[2]);
+        BYTE y1 = (BYTE)(0.299f*p1[0] + 0.587f*p1[1] + 0.114f*p1[2]);
+        BYTE u  = (BYTE)(128 - 0.168736f*p0[0] - 0.331264f*p0[1] + 0.5f*p0[2]);
+        BYTE v  = (BYTE)(128 + 0.5f*p0[0] - 0.418688f*p0[1] - 0.081312f*p0[2]);
+        *yuy2++ = y0; *yuy2++ = u; *yuy2++ = y1; *yuy2++ = v;
+    }
+}
+
+// ── Stream ────────────────────────────────────────────────────────────────────
+class CPeerCamStream : public CSourceStream {
+public:
+    CPeerCamStream(HRESULT* phr, CSource* pParent, LPCWSTR pName)
+        : CSourceStream(pName, phr, pParent, L"Output")
+        , m_hMapFile(nullptr), m_pShm(nullptr)
+        , m_hEvent(nullptr), m_hMutex(nullptr)
+        , m_lastFrameCount(0)
+        , m_width(DEFAULT_WIDTH), m_height(DEFAULT_HEIGHT)
+    {
+        // Open shared memory (created by vcam_win.cc when PeerCam connects)
+        m_hMapFile = OpenFileMappingA(FILE_MAP_READ, FALSE, PEERCAM_SHM_NAME);
+        if (m_hMapFile)
+            m_pShm = MapViewOfFile(m_hMapFile, FILE_MAP_READ, 0, 0, PEERCAM_SHM_SIZE);
+        m_hEvent = OpenEventA(SYNCHRONIZE, FALSE, PEERCAM_EVENT_NAME);
+        m_hMutex = OpenMutexA(SYNCHRONIZE, FALSE, PEERCAM_MUTEX_NAME);
+    }
+
+    ~CPeerCamStream() {
+        if (m_pShm)     UnmapViewOfFile(m_pShm);
+        if (m_hMapFile) CloseHandle(m_hMapFile);
+        if (m_hEvent)   CloseHandle(m_hEvent);
+        if (m_hMutex)   CloseHandle(m_hMutex);
+    }
+
+    HRESULT GetMediaType(CMediaType* pmt) override {
+        CAutoLock lock(m_pFilter->pStateLock());
+        VIDEOINFO* pvi = (VIDEOINFO*)pmt->AllocFormatBuffer(sizeof(VIDEOINFO));
+        if (!pvi) return E_OUTOFMEMORY;
+        ZeroMemory(pvi, sizeof(VIDEOINFO));
+        pvi->bmiHeader.biSize        = sizeof(BITMAPINFOHEADER);
+        pvi->bmiHeader.biWidth       = m_width;
+        pvi->bmiHeader.biHeight      = -m_height; // top-down
+        pvi->bmiHeader.biPlanes      = 1;
+        pvi->bmiHeader.biBitCount    = 16;
+        pvi->bmiHeader.biCompression = MAKEFOURCC('Y','U','Y','2');
+        pvi->bmiHeader.biSizeImage   = m_width * m_height * 2;
+        pvi->AvgTimePerFrame         = UNITS / DEFAULT_FPS;
+        pmt->SetType(&MEDIATYPE_Video);
+        pmt->SetFormatType(&FORMAT_VideoInfo);
+        pmt->SetTemporalCompression(FALSE);
+        pmt->SetSubtype(&MEDIASUBTYPE_YUY2);
+        pmt->SetSampleSize(pvi->bmiHeader.biSizeImage);
+        return S_OK;
+    }
+
+    HRESULT DecideBufferSize(IMemAllocator* pAlloc, ALLOCATOR_PROPERTIES* pReq) override {
+        ALLOCATOR_PROPERTIES actual;
+        pReq->cBuffers = 2;
+        pReq->cbBuffer = m_width * m_height * 2;
+        return pAlloc->SetProperties(pReq, &actual);
+    }
+
+    HRESULT FillBuffer(IMediaSample* pSample) override {
+        BYTE* pData = nullptr;
+        pSample->GetPointer(&pData);
+        long cbData = pSample->GetSize();
+
+        // Wait up to 50ms for a new frame, then deliver last frame (keeps stream alive)
+        if (m_hEvent) WaitForSingleObject(m_hEvent, 50);
+
+        if (m_pShm) {
+            // Try to re-open if PeerCam just started
+            if (!m_hMapFile) {
+                m_hMapFile = OpenFileMappingA(FILE_MAP_READ, FALSE, PEERCAM_SHM_NAME);
+                if (m_hMapFile)
+                    m_pShm = MapViewOfFile(m_hMapFile, FILE_MAP_READ, 0, 0, PEERCAM_SHM_SIZE);
+            }
+        } else {
+            // Try to open shared memory — PeerCam may have started after filter loaded
+            m_hMapFile = OpenFileMappingA(FILE_MAP_READ, FALSE, PEERCAM_SHM_NAME);
+            if (m_hMapFile)
+                m_pShm = MapViewOfFile(m_hMapFile, FILE_MAP_READ, 0, 0, PEERCAM_SHM_SIZE);
+        }
+
+        if (m_pShm) {
+            if (m_hMutex) WaitForSingleObject(m_hMutex, 16);
+            const PeerCamShmHeader* hdr = reinterpret_cast<const PeerCamShmHeader*>(m_pShm);
+            DWORD w = hdr->width, h = hdr->height;
+            if (w > 0 && h > 0 && w <= PEERCAM_MAX_WIDTH && h <= PEERCAM_MAX_HEIGHT) {
+                if ((int)w != m_width || (int)h != m_height) {
+                    m_width = (int)w; m_height = (int)h;
+                    // Reconnect to update media type — simplified: just use new dims
+                }
+                const BYTE* rgba = PeerCamPixelData(const_cast<void*>(m_pShm));
+                size_t needed = (size_t)w * h * 2;
+                if ((long)needed <= cbData)
+                    RgbaToYuy2(rgba, pData, w, h);
+            }
+            if (m_hMutex) ReleaseMutex(m_hMutex);
+        } else {
+            // No PeerCam connection — output black frame
+            ZeroMemory(pData, cbData);
+        }
+
+        REFERENCE_TIME rtStart = m_rtSampleTime;
+        m_rtSampleTime += UNITS / DEFAULT_FPS;
+        pSample->SetTime(&rtStart, &m_rtSampleTime);
+        pSample->SetSyncPoint(TRUE);
+        return S_OK;
+    }
+
+private:
+    HANDLE m_hMapFile, m_hEvent, m_hMutex;
+    void*  m_pShm;
+    DWORD  m_lastFrameCount;
+    int    m_width, m_height;
+    REFERENCE_TIME m_rtSampleTime = 0;
+};
+
+// ── Filter ────────────────────────────────────────────────────────────────────
+class CPeerCamFilter : public CSource {
+public:
+    static CUnknown* WINAPI CreateInstance(LPUNKNOWN pUnk, HRESULT* phr) {
+        return new CPeerCamFilter(pUnk, phr);
+    }
+    CPeerCamFilter(LPUNKNOWN pUnk, HRESULT* phr)
+        : CSource(FILTER_NAME, pUnk, CLSID_PeerCamVCam)
+    {
+        new CPeerCamStream(phr, this, L"PeerCam");
+    }
+};
+
+// ── Registration ──────────────────────────────────────────────────────────────
+static const AMOVIESETUP_MEDIATYPE sudOpPinTypes = {
+    &MEDIATYPE_Video, &MEDIASUBTYPE_YUY2
+};
+static const AMOVIESETUP_PIN sudOpPin = {
+    L"Output", FALSE, TRUE, FALSE, FALSE,
+    &CLSID_NULL, nullptr, 1, &sudOpPinTypes
+};
+static const AMOVIESETUP_FILTER sudFilter = {
+    &CLSID_PeerCamVCam, FILTER_NAME, MERIT_DO_NOT_USE, 1, &sudOpPin
+};
+
+CFactoryTemplate g_Templates[] = {
+    { FILTER_NAME, &CLSID_PeerCamVCam, CPeerCamFilter::CreateInstance, nullptr, &sudFilter }
+};
+int g_cTemplates = 1;
+
+STDAPI DllRegisterServer()   { return AMovieDllRegisterServer2(TRUE); }
+STDAPI DllUnregisterServer() { return AMovieDllRegisterServer2(FALSE); }
+
+extern "C" BOOL WINAPI DllEntryPoint(HINSTANCE, ULONG, LPVOID);
+BOOL WINAPI DllMain(HINSTANCE hDll, DWORD dwReason, LPVOID lpReserved) {
+    return DllEntryPoint(hDll, dwReason, lpReserved);
+}

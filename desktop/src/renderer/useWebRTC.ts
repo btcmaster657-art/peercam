@@ -41,6 +41,7 @@ function log(level: 'INFO' | 'WARN' | 'ERROR', ...parts: unknown[]) {
 export function useWebRTC() {
   const [status, setStatus] = useState<Status>('idle')
   const [error,  setError]  = useState<string | null>(null)
+  const [vcamOk, setVcamOk] = useState<boolean | null>(null)  // null=unknown, true=ok, false=failed
 
   const wsRef          = useRef<WebSocket | null>(null)
   const peerRef        = useRef<Instance | null>(null)
@@ -90,9 +91,9 @@ export function useWebRTC() {
     canvasRef.current = canvas
 
     window.peercam?.vcamStart().then(({ ok, error: err }) => {
-      if (ok) { vcamActiveRef.current = true; log('INFO', 'vcam started') }
-      else    { log('WARN', 'vcam start failed:', err) }
-    }).catch(e => log('WARN', 'vcam start error:', e.message))
+      if (ok) { vcamActiveRef.current = true; setVcamOk(true); log('INFO', 'vcam started — OBS Virtual Camera shared memory attached') }
+      else    { setVcamOk(false); log('WARN', 'vcam start failed:', err, '— is OBS Virtual Camera running? Start it via OBS Studio → Tools → Start Virtual Camera') }
+    }).catch(e => { setVcamOk(false); log('WARN', 'vcam start error:', e.message) })
 
     let lastW = 0, lastH = 0
 
@@ -381,5 +382,5 @@ export function useWebRTC() {
 
   useEffect(() => () => { disconnect() }, [disconnect])
 
-  return { status, error, connect, disconnect }
+  return { status, error, vcamOk, connect, disconnect }
 }

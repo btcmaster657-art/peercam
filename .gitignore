@@ -40,8 +40,35 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-# desktop
+# ── desktop ───────────────────────────────────────────────────────────────────
+# dependencies
 /desktop/node_modules
+
+# compiled renderer + main output
 /desktop/dist
+
+# electron-builder output
 /desktop/release
+
+# native addon build output
 /desktop/native/build
+
+# compiled object files and linker artifacts next to source
+/desktop/native/*.obj
+/desktop/native/*.lib
+/desktop/native/*.exp
+
+# DirectShow filter build artifacts (keep source, ignore compiled output)
+/desktop/native/vcam_filter/*.obj
+/desktop/native/vcam_filter/*.lib
+/desktop/native/vcam_filter/*.exp
+/desktop/native/vcam_filter/*.dll
+
+# BaseClasses — downloaded at build time, not committed
+/desktop/native/baseclasses
+
+# ── public downloads ──────────────────────────────────────────────────────────
+# Built installers are deployed via Vercel, not committed to git
+/public/downloads/*.AppImage
+/public/downloads/*.dmg
+/public/downloads/*.deb
