@@ -8,6 +8,8 @@ declare global {
       vcamStop:  () => Promise<void>
       vcamPushFrame: (w: number, h: number, rgba: Uint8Array) => Promise<void>
       platform: string
+      log: (level: string, message: string) => Promise<void>
+      getLogPath: () => Promise<string>
     }
   }
 }

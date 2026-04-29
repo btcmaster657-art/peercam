@@ -1,9 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useWebRTC, Role, Status, ConnectParams } from './useWebRTC'
 
-const API_BASE = (typeof import.meta !== 'undefined' && (import.meta as Record<string, unknown>).env
-  ? ((import.meta as { env: Record<string, string> }).env.VITE_API_BASE)
-  : undefined) ?? 'https://peercam.app'
+const API_BASE = import.meta.env.VITE_API_BASE ?? 'https://peercam.vercel.app'
 
 const STATUS_LABEL: Record<Status, string> = {
   idle:         'Disconnected',
@@ -43,11 +41,17 @@ export default function App() {
   const [loginLoading, setLoginLoading] = useState(false)
   const [codeLoading, setCodeLoading]   = useState(false)
   const [connecting, setConnecting]     = useState(false)
+  const [logPath, setLogPath]           = useState<string | null>(null)
   const videoPreviewRef = useRef<HTMLVideoElement>(null)
   const previewStreamRef = useRef<MediaStream | null>(null)
 
   const platform = window.peercam?.platform ?? 'win32'
   const { status, error, connect, disconnect } = useWebRTC()
+
+  // Fetch log path once on mount
+  useEffect(() => {
+    window.peercam?.getLogPath().then(setLogPath).catch(() => {})
+  }, [])
 
   const isActive = ['connecting', 'waiting_peer', 'waiting_host', 'reconnecting', 'connected'].includes(status)
 
@@ -147,7 +151,9 @@ export default function App() {
       // Pass params directly — no closure race condition
       connect(params)
     } catch (err: unknown) {
-      setConnectError(err instanceof Error ? err.message : 'Connection failed')
+      const msg = err instanceof Error ? err.message : 'Connection failed'
+      setConnectError(msg)
+      window.peercam?.log('ERROR', `handleConnect failed: ${msg}`)
     } finally {
       setConnecting(false)
     }
@@ -286,10 +292,14 @@ export default function App() {
           {STATUS_LABEL[status]}
         </div>
 
-        {/* Error from hook (reconnect attempts etc) */}
+        {/* Error from hook */}
         {error && status !== 'idle' && <p style={s.err}>{error}</p>}
         {/* Error from connect attempt */}
         {connectError && <p style={s.err}>{connectError}</p>}
+        {/* Log path — shown when there's an error so user can find the log */}
+        {(error || connectError) && logPath && (
+          <p style={s.logPath}>Log: {logPath}</p>
+        )}
 
         {/* Action buttons */}
         <div style={s.btnRow}>
@@ -301,7 +311,13 @@ export default function App() {
                 (role === 'provider' && (!codeState.code || !codeState.enabled)) ||
                 (role === 'requester' && codeInput.length !== 10)
               }
-              style={{ ...s.btn, opacity: connecting ? 0.6 : 1 }}
+              title={
+                role === 'provider' && !codeState.code ? 'Generate a join code first' :
+                role === 'provider' && !codeState.enabled ? 'Enable your code first' :
+                role === 'requester' && codeInput.length !== 10 ? 'Enter the full 10-digit code' :
+                ''
+              }
+              style={{ ...s.btn, opacity: (connecting || (role === 'provider' && (!codeState.code || !codeState.enabled)) || (role === 'requester' && codeInput.length !== 10)) ? 0.4 : 1, cursor: (role === 'provider' && (!codeState.code || !codeState.enabled)) || (role === 'requester' && codeInput.length !== 10) ? 'not-allowed' : 'pointer' }}
             >
               {connecting ? 'Connecting…' : 'Connect'}
             </button>
@@ -341,7 +357,7 @@ const s: Record<string, React.CSSProperties> = {
   roleRow:       { display: 'flex', gap: 8 },
   roleBtn:       { flex: 1, background: '#27272a', color: '#a1a1aa', border: '1px solid #3f3f46', borderRadius: 8, padding: '8px 0', fontSize: 13, cursor: 'pointer' },
   roleBtnActive: { background: '#1e1b4b', color: '#a5b4fc', borderColor: '#4f46e5' },
-  codeBox:       { background: '#18181b', border: '1px solid #3f3f46', borderRadius: 10, padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 10, alignItems: 'center' },
+  codeBox:       { background: '#18181b', border: '1px solid #3f3f46', borderRadius: 10, padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: 12, alignItems: 'center' },
   codeLabel:     { color: '#71717a', fontSize: 12, margin: 0 },
   code:          { fontSize: 30, fontWeight: 700, letterSpacing: '0.15em', margin: 0, fontVariantNumeric: 'tabular-nums' },
   codeActions:   { display: 'flex', gap: 8, width: '100%' },
@@ -350,5 +366,6 @@ const s: Record<string, React.CSSProperties> = {
   statusBadge:   { textAlign: 'center', fontWeight: 600, fontSize: 14 },
   err:           { color: '#f87171', fontSize: 13, textAlign: 'center' },
   hint:          { color: '#71717a', fontSize: 12, textAlign: 'center', lineHeight: 1.5 },
+  logPath:       { color: '#52525b', fontSize: 11, textAlign: 'center' as const, wordBreak: 'break-all' as const, lineHeight: 1.4 },
   preview:       { width: '100%', borderRadius: 8, background: '#18181b', aspectRatio: '16/9', objectFit: 'cover' },
 }

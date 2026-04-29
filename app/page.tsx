@@ -13,8 +13,8 @@ export default function LandingPage() {
       {/* Nav */}
       <nav className="w-full flex justify-between items-center px-8 py-4 border-b border-zinc-800">
         <span className="font-bold text-lg tracking-tight">PeerCam</span>
-        <div className="flex gap-4 text-sm">
-          <Link href="/login" className="text-zinc-400 hover:text-white transition-colors">Log in</Link>
+        <div className="flex items-center gap-3 text-sm">
+          <Link href="/login" className="text-zinc-400 hover:text-white px-4 py-1.5 rounded-full transition-colors">Log in</Link>
           <Link href="/signup" className="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-1.5 rounded-full transition-colors">Sign up</Link>
         </div>
       </nav>

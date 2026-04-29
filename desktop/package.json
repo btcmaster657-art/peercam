@@ -1,6 +1,8 @@
 {
   "name": "peercam-desktop",
-  "version": "0.1.1",
+  "version": "0.1.4",
+  "description": "PeerCam Desktop — Use any PC as a virtual webcam over WebRTC",
+  "author": "PeerCam",
   "private": true,
   "main": "dist/main/index.js",
   "scripts": {
@@ -48,6 +50,14 @@
     "win": {
       "target": "nsis",
       "artifactName": "PeerCam-Setup.exe"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "runAfterFinish": true,
+      "createDesktopShortcut": false,
+      "deleteAppDataOnUninstall": true,
+      "include": "assets/installer.nsh"
     },
     "linux": {
       "target": [

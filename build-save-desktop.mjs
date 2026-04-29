@@ -53,9 +53,9 @@ if (!noBump) {
 }
 
 const PLATFORM_CONFIG = {
-  win:   { script: 'pack:win',   find: f => f.startsWith('PeerCam-Setup') && f.endsWith('.exe') && !f.endsWith('.blockmap'), dest: `PeerCam-Setup_${newVersion}.exe` },
-  mac:   { script: 'pack:mac',   find: f => f.endsWith('.dmg'),      dest: `PeerCam-Setup_${newVersion}.dmg` },
-  linux: { script: 'pack:linux', find: f => f.endsWith('.AppImage'), dest: `PeerCam-Setup_${newVersion}.AppImage` },
+  win:   { script: 'pack:win',   find: f => f === 'PeerCam-Setup.exe',        dest: `PeerCam-Setup_${newVersion}.exe` },
+  mac:   { script: 'pack:mac',   find: f => f === 'PeerCam-Setup.dmg',        dest: `PeerCam-Setup_${newVersion}.dmg` },
+  linux: { script: 'pack:linux', find: f => f === 'PeerCam-Setup.AppImage',   dest: `PeerCam-Setup_${newVersion}.AppImage` },
 }
 
 for (const platform of platforms) {
