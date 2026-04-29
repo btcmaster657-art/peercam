@@ -48,6 +48,8 @@ export default function App() {
   const [connectError, setConnectError] = useState('')
   const [loginLoading, setLoginLoading] = useState(false)
   const [codeLoading, setCodeLoading]   = useState(false)
+  const [codeFetching, setCodeFetching] = useState(false)
+  const [codeError, setCodeError]       = useState('')
   const [connecting, setConnecting]     = useState(false)
   const [disconnecting, setDisconnecting] = useState(false)
   const [isFullscreen, setIsFullscreen] = useState(false)
@@ -62,7 +64,7 @@ export default function App() {
   // ── Spinner keyframe injection ────────────────────────────────────────────
   useEffect(() => {
     const style = document.createElement('style')
-    style.textContent = '@keyframes spin { to { transform: rotate(360deg) } }'
+    style.textContent = '@keyframes spin { to { transform: rotate(360deg) } } @keyframes shimmer { 0%{background-position:200% 0} 100%{background-position:-200% 0} }'
     document.head.appendChild(style)
     return () => style.remove()
   }, [])
@@ -119,10 +121,22 @@ export default function App() {
   }, [auth, role])
 
   async function fetchCode(accessToken: string) {
-    const res = await fetch(`${API_BASE}/api/provider/code`, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    })
-    if (res.ok) setCodeState(await res.json())
+    setCodeFetching(true)
+    setCodeError('')
+    try {
+      const url = `${API_BASE}/api/provider/code`
+      window.peercam?.log('INFO', `fetchCode GET ${url}`)
+      const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } })
+      window.peercam?.log(res.ok ? 'INFO' : 'WARN', `fetchCode response status=${res.status}`)
+      if (res.ok) setCodeState(await res.json())
+      else setCodeError(`Server error (${res.status}) — tap retry`)
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err)
+      window.peercam?.log('ERROR', `fetchCode failed: ${msg}`)
+      setCodeError('Network error — check your connection')
+    } finally {
+      setCodeFetching(false)
+    }
   }
 
   // ── Auth ──────────────────────────────────────────────────────────────────
@@ -132,6 +146,7 @@ export default function App() {
     setLoginLoading(true)
     const fd = new FormData(e.currentTarget)
     try {
+      window.peercam?.log('INFO', `handleLogin POST ${API_BASE}/api/auth/signin`)
       const res = await fetch(`${API_BASE}/api/auth/signin`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -162,24 +177,38 @@ export default function App() {
   async function handleGenerateCode() {
     if (!auth) return
     setCodeLoading(true)
-    const res = await fetch(`${API_BASE}/api/provider/code`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${auth.accessToken}` },
-    })
-    if (res.ok) setCodeState(await res.json())
-    setCodeLoading(false)
+    setCodeError('')
+    try {
+      const res = await fetch(`${API_BASE}/api/provider/code`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${auth.accessToken}` },
+      })
+      if (res.ok) setCodeState(await res.json())
+      else setCodeError(`Failed to generate code (${res.status})`)
+    } catch {
+      setCodeError('Network error — check your connection')
+    } finally {
+      setCodeLoading(false)
+    }
   }
 
   async function handleToggleCode(enabled: boolean) {
     if (!auth) return
     setCodeLoading(true)
-    const res = await fetch(`${API_BASE}/api/provider/code`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${auth.accessToken}` },
-      body: JSON.stringify({ enabled }),
-    })
-    if (res.ok) setCodeState(await res.json())
-    setCodeLoading(false)
+    setCodeError('')
+    try {
+      const res = await fetch(`${API_BASE}/api/provider/code`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${auth.accessToken}` },
+        body: JSON.stringify({ enabled }),
+      })
+      if (res.ok) setCodeState(await res.json())
+      else setCodeError(`Failed to update code (${res.status})`)
+    } catch {
+      setCodeError('Network error — check your connection')
+    } finally {
+      setCodeLoading(false)
+    }
   }
 
   // ── Connect / Disconnect ──────────────────────────────────────────────────
@@ -330,7 +359,23 @@ export default function App() {
         {/* Provider: code management */}
         {role === 'provider' && !isActive && (
           <div style={s.codeBox}>
-            {codeState.code ? (
+            {codeFetching ? (
+              <>
+                <p style={s.codeLabel}>Your join code</p>
+                <div style={s.codeSkeleton} />
+                <p style={{ color: '#52525b', fontSize: 12, margin: 0 }}>Loading…</p>
+              </>
+            ) : codeError && !codeState.code ? (
+              <>
+                <p style={{ color: '#f87171', fontSize: 13, textAlign: 'center', margin: 0 }}>{codeError}</p>
+                <button
+                  onClick={() => auth && fetchCode(auth.accessToken)}
+                  style={{ ...s.smallBtn, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, marginTop: 4 }}
+                >
+                  ↺ Retry
+                </button>
+              </>
+            ) : codeState.code ? (
               <>
                 <p style={s.codeLabel}>Your join code</p>
                 <p style={{ ...s.code, color: codeState.enabled ? '#f4f4f5' : '#52525b' }}>
@@ -351,6 +396,7 @@ export default function App() {
                     {codeLoading ? '…' : 'Refresh'}
                   </button>
                 </div>
+                {codeError && <p style={s.err}>{codeError}</p>}
                 {!codeState.enabled && <p style={s.warn}>⚠ Code disabled — viewers cannot connect</p>}
               </>
             ) : (
@@ -487,6 +533,7 @@ const s: Record<string, React.CSSProperties> = {
   logBody:       { maxHeight: 150, overflowY: 'auto', padding: '6px 10px', display: 'flex', flexDirection: 'column', gap: 2 },
   logLine:       { fontSize: 10, fontFamily: 'monospace', lineHeight: 1.4, wordBreak: 'break-all' },
   obsWarn:       { background: '#1c1400', border: '1px solid #78350f', borderRadius: 8, padding: '12px 14px', fontSize: 12, color: '#d4d4d8', lineHeight: 1.6 },
+  codeSkeleton:  { width: 180, height: 36, borderRadius: 6, background: 'linear-gradient(90deg,#27272a 25%,#3f3f46 50%,#27272a 75%)', backgroundSize: '200% 100%', animation: 'shimmer 1.4s infinite' },
   preview:       { width: '100%', borderRadius: 8, background: '#18181b', aspectRatio: '16/9', objectFit: 'cover' },
   fsExit:        { position: 'fixed', top: 12, right: 12, zIndex: 9999, background: 'rgba(0,0,0,0.7)', color: '#f4f4f5', border: '1px solid #3f3f46', borderRadius: 6, padding: '6px 12px', fontSize: 12, cursor: 'pointer', backdropFilter: 'blur(4px)' },
 }
