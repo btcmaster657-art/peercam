@@ -266,21 +266,24 @@ export function useWebRTC() {
 
         case 'session_request': {
           log('INFO', `session_request received sessionId=${(msg.sessionId as string).slice(0,8)} — getting camera`)
-          // Provider: get camera stream
-          if (!localStreamRef.current) {
-            try {
-              localStreamRef.current = await navigator.mediaDevices.getUserMedia({ video: true, audio: false })
-              log('INFO', `camera acquired tracks=${localStreamRef.current.getVideoTracks().length}`)
-            } catch (e: unknown) {
-              const msg2 = e instanceof Error ? e.message : String(e)
-              log('ERROR', 'getUserMedia failed:', msg2)
-              ws.send(JSON.stringify({ type: 'end_session' }))
-              setError('Camera access denied')
-              updateStatus('error')
-              return
+          // Provider: get fresh camera stream for each session
+          // Always acquire new stream to avoid stale/damaged streams from previous sessions
+          try {
+            // Stop previous stream if it exists
+            if (localStreamRef.current) {
+              log('INFO', 'stopping previous camera stream')
+              localStreamRef.current.getTracks().forEach(t => t.stop())
+              localStreamRef.current = null
             }
-          } else {
-            log('INFO', 'reusing existing camera stream')
+            localStreamRef.current = await navigator.mediaDevices.getUserMedia({ video: true, audio: false })
+            log('INFO', `camera acquired tracks=${localStreamRef.current.getVideoTracks().length}`)
+          } catch (e: unknown) {
+            const msg2 = e instanceof Error ? e.message : String(e)
+            log('ERROR', 'getUserMedia failed:', msg2)
+            ws.send(JSON.stringify({ type: 'end_session' }))
+            setError('Camera access denied')
+            updateStatus('error')
+            return
           }
           log('INFO', 'sending agent_ready')
           ws.send(JSON.stringify({ type: 'agent_ready', sessionId: msg.sessionId }))
@@ -364,9 +367,9 @@ export function useWebRTC() {
     stopFramePipe()
     sessionIdRef.current = null
     if (localStreamRef.current) {
+      log('INFO', 'stopping camera stream')
       localStreamRef.current.getTracks().forEach(t => t.stop())
       localStreamRef.current = null
-      log('INFO', 'camera stream stopped')
     }
     if (peerRef.current && !peerRef.current.destroyed) peerRef.current.destroy()
     peerRef.current = null
