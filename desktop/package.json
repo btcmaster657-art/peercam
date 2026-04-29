@@ -1,6 +1,6 @@
 {
   "name": "peercam-desktop",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "PeerCam Desktop — Use any PC as a virtual webcam over WebRTC",
   "author": "PeerCam",
   "private": true,
@@ -19,8 +19,11 @@
     "pack:linux": "npm run build && electron-builder --linux"
   },
   "dependencies": {
+    "buffer": "^6.0.3",
+    "eventemitter3": "^5.0.4",
     "node-addon-api": "^8",
     "simple-peer": "^9.11.1",
+    "stream-browserify": "^3.0.0",
     "ws": "^8.18.0"
   },
   "devDependencies": {
