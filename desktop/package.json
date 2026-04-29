@@ -1,6 +1,6 @@
 {
   "name": "peercam-desktop",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "PeerCam Desktop — Use any PC as a virtual webcam over WebRTC",
   "author": "PeerCam",
   "private": true,

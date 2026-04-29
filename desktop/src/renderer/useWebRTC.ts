@@ -28,7 +28,7 @@ export interface ConnectParams {
 
 const FRAME_MS = 1000 / 30
 
-// ── Logger — writes to file via IPC and console ───────────────────────────────
+// ── Logger ────────────────────────────────────────────────────────────────────
 function log(level: 'INFO' | 'WARN' | 'ERROR', ...parts: unknown[]) {
   const msg = parts.map(p => typeof p === 'string' ? p : JSON.stringify(p)).join(' ')
   const line = `[webrtc] ${msg}`
@@ -41,20 +41,24 @@ function log(level: 'INFO' | 'WARN' | 'ERROR', ...parts: unknown[]) {
 export function useWebRTC() {
   const [status, setStatus] = useState<Status>('idle')
   const [error,  setError]  = useState<string | null>(null)
-  const [vcamOk, setVcamOk] = useState<boolean | null>(null)  // null=unknown, true=ok, false=failed
+  const [vcamOk, setVcamOk] = useState<boolean | null>(null)
 
   const wsRef          = useRef<WebSocket | null>(null)
   const peerRef        = useRef<Instance | null>(null)
-  const sessionIdRef   = useRef<string | null>(null)   // track active session to ignore duplicate triggers
+  const sessionIdRef   = useRef<string | null>(null)
   const rafRef         = useRef<number>(0)
   const lastFrameRef   = useRef<number>(0)
   const frameBusyRef   = useRef<boolean>(false)
+  const frameCountRef  = useRef<number>(0)
+  const frameDropRef   = useRef<number>(0)
   const canvasRef      = useRef<HTMLCanvasElement | null>(null)
   const videoRef       = useRef<HTMLVideoElement | null>(null)
   const statusRef      = useRef<Status>('idle')
   const paramsRef      = useRef<ConnectParams | null>(null)
   const vcamActiveRef  = useRef<boolean>(false)
   const localStreamRef = useRef<MediaStream | null>(null)
+  const connectTimeRef = useRef<number>(0)
+  const pipeStartRef   = useRef<number>(0)
 
   function updateStatus(s: Status) {
     log('INFO', `status: ${statusRef.current} → ${s}`)
@@ -64,79 +68,139 @@ export function useWebRTC() {
 
   // ── Frame pump (requester only) ───────────────────────────────────────────
   const stopFramePipe = useCallback(() => {
+    if (rafRef.current === 0 && !vcamActiveRef.current && !videoRef.current) return
     cancelAnimationFrame(rafRef.current)
     rafRef.current = 0
+    const elapsed = pipeStartRef.current ? ((Date.now() - pipeStartRef.current) / 1000).toFixed(1) : '?'
+    log('INFO', `frame pipe stopping — ran=${elapsed}s frames_pushed=${frameCountRef.current} frames_dropped=${frameDropRef.current}`)
+    frameCountRef.current = 0
+    frameDropRef.current  = 0
+    pipeStartRef.current  = 0
     if (vcamActiveRef.current) {
       vcamActiveRef.current = false
-      window.peercam?.vcamStop().catch(() => {})
+      log('INFO', 'vcam:stop — calling IPC')
+      window.peercam?.vcamStop()
+        .then(() => log('INFO', 'vcam:stop — done'))
+        .catch(e => log('WARN', 'vcam:stop error:', e?.message ?? String(e)))
     }
     if (videoRef.current) {
       videoRef.current.srcObject = null
       videoRef.current = null
+      log('INFO', 'frame pipe video element released')
     }
     log('INFO', 'frame pipe stopped')
   }, [])
 
   const startFramePipe = useCallback((stream: MediaStream) => {
-    log('INFO', 'starting frame pipe', `tracks=${stream.getVideoTracks().length}`)
+    const tracks = stream.getVideoTracks()
+    log('INFO', `frame pipe starting — video_tracks=${tracks.length}`)
+    if (tracks.length > 0) {
+      const t = tracks[0]
+      const s = t.getSettings()
+      log('INFO', `remote track — label="${t.label}" readyState=${t.readyState} enabled=${t.enabled} w=${s.width ?? '?'} h=${s.height ?? '?'} fps=${s.frameRate ?? '?'}`)
+    }
+
     const video = document.createElement('video')
     video.srcObject = stream
     video.muted = true
     video.playsInline = true
-    video.play().catch(e => log('WARN', 'video.play() failed:', e.message))
     videoRef.current = video
+
+    video.play()
+      .then(() => log('INFO', 'frame pipe video.play() resolved'))
+      .catch(e => log('WARN', 'frame pipe video.play() failed:', e?.message ?? String(e)))
+
+    video.addEventListener('loadedmetadata', () =>
+      log('INFO', `frame pipe video metadata loaded — ${video.videoWidth}×${video.videoHeight}`))
+    video.addEventListener('stalled', () =>
+      log('WARN', 'frame pipe video stalled'))
+    video.addEventListener('ended', () =>
+      log('WARN', 'frame pipe video ended'))
 
     const canvas = document.createElement('canvas')
     const ctx = canvas.getContext('2d', { willReadFrequently: true })!
     canvasRef.current = canvas
 
-    window.peercam?.vcamStart().then(({ ok, error: err }) => {
-      if (ok) { vcamActiveRef.current = true; setVcamOk(true); log('INFO', 'vcam started — OBS Virtual Camera shared memory attached') }
-      else    { setVcamOk(false); log('WARN', 'vcam start failed:', err, '— is OBS Virtual Camera running? Start it via OBS Studio → Tools → Start Virtual Camera') }
-    }).catch(e => { setVcamOk(false); log('WARN', 'vcam start error:', e.message) })
+    log('INFO', 'vcam:start — calling IPC')
+    window.peercam?.vcamStart()
+      .then(({ ok, error: err }) => {
+        if (ok) {
+          vcamActiveRef.current = true
+          setVcamOk(true)
+          log('INFO', 'vcam:start — ok=true, shared memory attached')
+        } else {
+          setVcamOk(false)
+          log('WARN', `vcam:start — ok=false error="${err ?? 'unknown'}" — OBS Virtual Camera not running?`)
+        }
+      })
+      .catch(e => {
+        setVcamOk(false)
+        log('ERROR', 'vcam:start — IPC threw:', e?.message ?? String(e))
+      })
 
+    pipeStartRef.current = Date.now()
     let lastW = 0, lastH = 0
+    let lastStatLog = Date.now()
 
     const pump = () => {
       rafRef.current = requestAnimationFrame(pump)
       const v = videoRef.current
-      if (!v?.videoWidth) return
+      if (!v?.videoWidth || !v.videoHeight) return
       const now = performance.now()
       if (now - lastFrameRef.current < FRAME_MS) return
-      if (frameBusyRef.current) return
+      if (frameBusyRef.current) { frameDropRef.current++; return }
       lastFrameRef.current = now
+
       if (v.videoWidth !== lastW || v.videoHeight !== lastH) {
-        canvas.width  = v.videoWidth
-        canvas.height = v.videoHeight
-        lastW = canvas.width
-        lastH = canvas.height
-        log('INFO', `frame size: ${lastW}×${lastH}`)
+        lastW = v.videoWidth
+        lastH = v.videoHeight
+        canvas.width  = lastW
+        canvas.height = lastH
+        log('INFO', `frame pipe resolution: ${lastW}×${lastH}`)
       }
+      if (!lastW || !lastH) return
+
       ctx.drawImage(v, 0, 0)
+      if (!vcamActiveRef.current) return
+
       const rgba = new Uint8Array(ctx.getImageData(0, 0, lastW, lastH).data.buffer)
       frameBusyRef.current = true
+      frameCountRef.current++
+
+      // Log frame stats every 10s
+      if (Date.now() - lastStatLog >= 10_000) {
+        lastStatLog = Date.now()
+        log('INFO', `frame pipe stats — pushed=${frameCountRef.current} dropped=${frameDropRef.current} size=${lastW}×${lastH}`)
+      }
+
       window.peercam?.vcamPushFrame(lastW, lastH, rgba)
         .then(() => { frameBusyRef.current = false })
-        .catch(() => { frameBusyRef.current = false })
+        .catch(e => {
+          frameBusyRef.current = false
+          log('WARN', 'vcam:pushFrame error:', e?.message ?? String(e))
+        })
     }
     rafRef.current = requestAnimationFrame(pump)
+    log('INFO', 'frame pipe RAF pump started')
   }, [])
 
   // ── WebRTC peer factory ───────────────────────────────────────────────────
   function buildPeer(ws: WebSocket, sessionId: string, initiator: boolean, stream?: MediaStream): Instance {
-    log('INFO', `building peer initiator=${initiator} stream=${!!stream} sessionId=${sessionId.slice(0,8)}`)
+    const sid8 = sessionId.slice(0, 8)
+    log('INFO', `buildPeer — initiator=${initiator} stream=${!!stream} sessionId=${sid8}`)
 
     if (peerRef.current && !peerRef.current.destroyed) {
-      log('INFO', 'destroying previous peer')
+      log('WARN', 'buildPeer — destroying existing peer before rebuild')
       peerRef.current.destroy()
     }
 
     let peer: Instance
     try {
       peer = new SimplePeer({ initiator, trickle: true, stream })
+      log('INFO', `buildPeer — SimplePeer constructed ok initiator=${initiator}`)
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e)
-      log('ERROR', 'SimplePeer constructor failed:', msg)
+      log('ERROR', 'buildPeer — SimplePeer constructor threw:', msg)
       setError(`WebRTC init failed: ${msg}`)
       updateStatus('error')
       throw e
@@ -145,16 +209,22 @@ export function useWebRTC() {
 
     peer.on('signal', (data: SignalData) => {
       const type = (data as Record<string, unknown>).type ?? 'candidate'
-      log('INFO', `signal out type=${type} sessionId=${sessionId.slice(0,8)}`)
+      log('INFO', `signal out type=${type} sessionId=${sid8} ws_state=${ws.readyState}`)
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'webrtc_signal', sessionId, signal: data }))
       } else {
-        log('WARN', `signal dropped — ws not open (state=${ws.readyState})`)
+        log('WARN', `signal out DROPPED — ws not open state=${ws.readyState}`)
       }
     })
 
     peer.on('stream', (remoteStream: MediaStream) => {
-      log('INFO', `remote stream received tracks=${remoteStream.getVideoTracks().length}`)
+      const vtracks = remoteStream.getVideoTracks()
+      log('INFO', `peer stream received — video_tracks=${vtracks.length} audio_tracks=${remoteStream.getAudioTracks().length}`)
+      if (vtracks.length > 0) {
+        const t = vtracks[0]
+        const s = t.getSettings()
+        log('INFO', `stream video track — label="${t.label}" readyState=${t.readyState} w=${s.width ?? '?'} h=${s.height ?? '?'} fps=${s.frameRate ?? '?'}`)
+      }
       if (paramsRef.current?.role === 'requester') {
         updateStatus('connected')
         startFramePipe(remoteStream)
@@ -162,14 +232,15 @@ export function useWebRTC() {
     })
 
     peer.on('connect', () => {
-      log('INFO', 'peer data channel connected')
+      const elapsed = connectTimeRef.current ? `${Date.now() - connectTimeRef.current}ms` : '?'
+      log('INFO', `peer data channel connected — time_to_connect=${elapsed}`)
       updateStatus('connected')
     })
 
     peer.on('error', (err: Error) => {
-      log('ERROR', 'peer error:', err.message)
+      log('ERROR', `peer error — message="${err.message}"`)
       if (err.message.includes('Ice connection failed') || err.message.includes('ICE')) {
-        log('WARN', 'ICE failure — may self-heal')
+        log('WARN', 'ICE failure — connection may self-heal')
         return
       }
       setError(err.message)
@@ -179,8 +250,27 @@ export function useWebRTC() {
     peer.on('close', () => {
       log('INFO', 'peer closed')
       stopFramePipe()
+      peerRef.current = null
       if (statusRef.current === 'connected') updateStatus('idle')
     })
+
+    // Log ICE connection state changes via the underlying RTCPeerConnection
+    // simple-peer exposes it as peer._pc
+    try {
+      const pc = (peer as unknown as { _pc?: RTCPeerConnection })._pc
+      if (pc) {
+        pc.addEventListener('iceconnectionstatechange', () =>
+          log('INFO', `ICE connection state: ${pc.iceConnectionState}`))
+        pc.addEventListener('icegatheringstatechange', () =>
+          log('INFO', `ICE gathering state: ${pc.iceGatheringState}`))
+        pc.addEventListener('connectionstatechange', () =>
+          log('INFO', `peer connection state: ${pc.connectionState}`))
+        pc.addEventListener('signalingstatechange', () =>
+          log('INFO', `signaling state: ${pc.signalingState}`))
+      } else {
+        log('WARN', 'buildPeer — _pc not available, skipping RTCPeerConnection state logging')
+      }
+    } catch { /* non-critical */ }
 
     return peer
   }
@@ -188,24 +278,26 @@ export function useWebRTC() {
   // ── Main connect ──────────────────────────────────────────────────────────
   const connect = useCallback((params: ConnectParams) => {
     if (!params.relayUrl) {
-      log('ERROR', 'no relay URL')
+      log('ERROR', 'connect — no relay URL provided')
       setError('No relay URL')
       updateStatus('error')
       return
     }
 
-    log('INFO', `connecting role=${params.role} relay=${params.relayUrl} code=${params.joinCode}`)
+    log('INFO', `connect — role=${params.role} relay=${params.relayUrl} code=${params.joinCode} userId=${params.userId.slice(0,8)} dbSessionId=${params.dbSessionId ?? 'null'}`)
     paramsRef.current = params
+    connectTimeRef.current = Date.now()
     updateStatus('connecting')
     setError(null)
 
+    log('INFO', `ws — opening connection to ${params.relayUrl}`)
     const ws = new WebSocket(params.relayUrl)
     wsRef.current = ws
 
     ws.onopen = () => {
-      log('INFO', 'ws connected to relay')
+      log('INFO', `ws — connected to relay (readyState=${ws.readyState})`)
       if (params.role === 'requester') {
-        log('INFO', `sending request_session code=${params.joinCode}`)
+        log('INFO', `ws — sending request_session code=${params.joinCode}`)
         ws.send(JSON.stringify({
           type:        'request_session',
           authToken:   params.authToken,
@@ -215,7 +307,7 @@ export function useWebRTC() {
         }))
         updateStatus('waiting_peer')
       } else {
-        log('INFO', `sending register_provider code=${params.joinCode}`)
+        log('INFO', `ws — sending register_provider code=${params.joinCode}`)
         ws.send(JSON.stringify({
           type:      'register_provider',
           authToken: params.authToken,
@@ -229,7 +321,7 @@ export function useWebRTC() {
     ws.onmessage = async (ev) => {
       let msg: Record<string, unknown>
       try { msg = JSON.parse(ev.data as string) }
-      catch { log('WARN', 'failed to parse relay message'); return }
+      catch { log('WARN', 'ws — failed to parse relay message:', String(ev.data).slice(0, 100)); return }
 
       log('INFO', `relay msg type=${msg.type as string}`)
 
@@ -240,23 +332,20 @@ export function useWebRTC() {
           break
 
         case 'session_created':
-          // Session matched — wait for agent_session_ready before starting WebRTC
-          // (provider may not have camera ready yet)
           log('INFO', `session_created sessionId=${(msg.sessionId as string).slice(0,8)} — waiting for provider ready`)
           sessionIdRef.current = msg.sessionId as string
           break
 
         case 'agent_session_ready': {
           const sid = msg.sessionId as string
-          // Guard: only build the peer once per session
           if (peerRef.current && !peerRef.current.destroyed) {
-            log('INFO', `duplicate agent_session_ready for sessionId=${sid.slice(0,8)} — ignoring`)
+            log('WARN', `agent_session_ready — duplicate for sessionId=${sid.slice(0,8)}, peer already exists, ignoring`)
             break
           }
           sessionIdRef.current = sid
-          log('INFO', `agent ready sessionId=${sid.slice(0,8)} — creating initiator peer`)
+          log('INFO', `agent_session_ready sessionId=${sid.slice(0,8)} — building initiator peer`)
           try { buildPeer(ws, sid, true) }
-          catch { /* already logged in buildPeer */ }
+          catch { /* already logged */ }
           break
         }
 
@@ -265,44 +354,52 @@ export function useWebRTC() {
           break
 
         case 'session_request': {
-          log('INFO', `session_request received sessionId=${(msg.sessionId as string).slice(0,8)} — getting camera`)
-          // Provider: get fresh camera stream for each session
-          // Always acquire new stream to avoid stale/damaged streams from previous sessions
+          const sid = (msg.sessionId as string)
+          log('INFO', `session_request sessionId=${sid.slice(0,8)} — acquiring camera`)
           try {
-            // Stop previous stream if it exists
             if (localStreamRef.current) {
-              log('INFO', 'stopping previous camera stream')
+              const old = localStreamRef.current.getVideoTracks()
+              log('INFO', `session_request — stopping previous stream tracks=${old.length}`)
+              old.forEach(t => { t.stop(); log('INFO', `track stopped label="${t.label}"`) })
               localStreamRef.current.getTracks().forEach(t => t.stop())
               localStreamRef.current = null
             }
+            log('INFO', 'getUserMedia — requesting video')
             localStreamRef.current = await navigator.mediaDevices.getUserMedia({ video: true, audio: false })
-            log('INFO', `camera acquired tracks=${localStreamRef.current.getVideoTracks().length}`)
+            const vtracks = localStreamRef.current.getVideoTracks()
+            log('INFO', `getUserMedia — ok tracks=${vtracks.length}`)
+            if (vtracks.length > 0) {
+              const t = vtracks[0]
+              const s = t.getSettings()
+              log('INFO', `camera track — label="${t.label}" w=${s.width ?? '?'} h=${s.height ?? '?'} fps=${s.frameRate ?? '?'} deviceId=${s.deviceId?.slice(0,8) ?? '?'}`)
+            }
           } catch (e: unknown) {
             const msg2 = e instanceof Error ? e.message : String(e)
-            log('ERROR', 'getUserMedia failed:', msg2)
+            log('ERROR', `getUserMedia — failed: ${msg2}`)
             ws.send(JSON.stringify({ type: 'end_session' }))
             setError('Camera access denied')
             updateStatus('error')
             return
           }
-          log('INFO', 'sending agent_ready')
+          log('INFO', `session_request — sending agent_ready sessionId=${sid.slice(0,8)}`)
           ws.send(JSON.stringify({ type: 'agent_ready', sessionId: msg.sessionId }))
-          try { buildPeer(ws, msg.sessionId as string, false, localStreamRef.current) }
+          try { buildPeer(ws, sid, false, localStreamRef.current) }
           catch { /* already logged */ }
           break
         }
 
         case 'webrtc_signal': {
           const sigType = ((msg.signal as Record<string, unknown>)?.type ?? 'candidate') as string
-          log('INFO', `signal in type=${sigType} sessionId=${(msg.sessionId as string).slice(0,8)}`)
+          const sid8 = (msg.sessionId as string).slice(0, 8)
+          log('INFO', `signal in type=${sigType} sessionId=${sid8} peer_exists=${!!peerRef.current} peer_destroyed=${peerRef.current?.destroyed ?? 'null'}`)
           const peer = peerRef.current
           if (peer && !peer.destroyed) {
             try { peer.signal(msg.signal as SignalData) }
             catch (e: unknown) {
-              log('ERROR', 'peer.signal() threw:', e instanceof Error ? e.message : String(e))
+              log('ERROR', `peer.signal() threw type=${sigType}:`, e instanceof Error ? e.message : String(e))
             }
           } else {
-            log('WARN', `signal dropped — peer not ready (destroyed=${peer?.destroyed ?? 'null'})`)
+            log('WARN', `signal in DROPPED type=${sigType} — peer not ready`)
           }
           break
         }
@@ -310,7 +407,10 @@ export function useWebRTC() {
         case 'reconnecting':
           log('WARN', `relay reconnecting attempt=${msg.attempt}/${msg.maxAttempts}`)
           stopFramePipe()
-          if (peerRef.current && !peerRef.current.destroyed) peerRef.current.destroy()
+          if (peerRef.current && !peerRef.current.destroyed) {
+            log('INFO', 'reconnecting — destroying peer')
+            peerRef.current.destroy()
+          }
           peerRef.current = null
           sessionIdRef.current = null
           updateStatus('reconnecting')
@@ -318,11 +418,15 @@ export function useWebRTC() {
           break
 
         case 'session_ended': {
-          log('INFO', `session ended reason=${msg.reason}`)
+          log('INFO', `session_ended reason=${msg.reason}`)
           stopFramePipe()
-          if (peerRef.current && !peerRef.current.destroyed) peerRef.current.destroy()
+          const endedPeer = peerRef.current
           peerRef.current = null
           sessionIdRef.current = null
+          if (endedPeer && !endedPeer.destroyed) {
+            log('INFO', 'session_ended — destroying peer')
+            endedPeer.destroy()
+          }
           if (msg.reason === 'no_provider_available') {
             setError('Provider disconnected and could not reconnect')
             updateStatus('error')
@@ -344,10 +448,15 @@ export function useWebRTC() {
     }
 
     ws.onclose = (ev) => {
-      log('INFO', `ws closed code=${ev.code} clean=${ev.wasClean} reason=${ev.reason || 'none'}`)
+      log(ev.wasClean ? 'INFO' : 'WARN',
+        `ws closed — code=${ev.code} clean=${ev.wasClean} reason="${ev.reason || 'none'}" status_at_close=${statusRef.current}`)
       stopFramePipe()
-      if (peerRef.current && !peerRef.current.destroyed) peerRef.current.destroy()
+      const closedPeer = peerRef.current
       peerRef.current = null
+      if (closedPeer && !closedPeer.destroyed) {
+        log('INFO', 'ws closed — destroying peer')
+        closedPeer.destroy()
+      }
       if (statusRef.current !== 'error' && statusRef.current !== 'idle') {
         if (ev.wasClean) updateStatus('idle')
         else {
@@ -357,23 +466,29 @@ export function useWebRTC() {
       }
     }
 
-    ws.onerror = (ev) => {
-      log('ERROR', 'ws error', JSON.stringify(ev))
+    ws.onerror = () => {
+      // onerror gives no useful detail in browsers; the close event that follows has the code
+      log('ERROR', `ws error event fired (readyState=${ws.readyState})`)
     }
   }, [startFramePipe, stopFramePipe]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const disconnect = useCallback(() => {
-    log('INFO', 'disconnect called')
+    log('INFO', `disconnect called — current status=${statusRef.current}`)
     stopFramePipe()
     sessionIdRef.current = null
     if (localStreamRef.current) {
-      log('INFO', 'stopping camera stream')
-      localStreamRef.current.getTracks().forEach(t => t.stop())
+      const tracks = localStreamRef.current.getTracks()
+      log('INFO', `disconnect — stopping camera stream tracks=${tracks.length}`)
+      tracks.forEach(t => { t.stop(); log('INFO', `track stopped label="${t.label}"`) })
       localStreamRef.current = null
     }
-    if (peerRef.current && !peerRef.current.destroyed) peerRef.current.destroy()
+    if (peerRef.current && !peerRef.current.destroyed) {
+      log('INFO', 'disconnect — destroying peer')
+      peerRef.current.destroy()
+    }
     peerRef.current = null
     if (wsRef.current) {
+      log('INFO', `disconnect — closing ws (readyState=${wsRef.current.readyState})`)
       wsRef.current.onclose = null
       wsRef.current.close(1000, 'user_disconnect')
       wsRef.current = null
@@ -381,9 +496,13 @@ export function useWebRTC() {
     paramsRef.current = null
     updateStatus('idle')
     setError(null)
+    log('INFO', 'disconnect complete')
   }, [stopFramePipe])
 
-  useEffect(() => () => { disconnect() }, [disconnect])
+  useEffect(() => () => {
+    log('INFO', 'useWebRTC unmounting — calling disconnect')
+    disconnect()
+  }, [disconnect])
 
-  return { status, error, vcamOk, connect, disconnect }
+  return { status, error, vcamOk, connect, disconnect, localStream: localStreamRef }
 }

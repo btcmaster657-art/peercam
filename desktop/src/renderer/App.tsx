@@ -55,9 +55,8 @@ export default function App() {
   const [logs, setLogs]                 = useState<string[]>([])
 
   const videoPreviewRef  = useRef<HTMLVideoElement>(null)
-  const previewStreamRef = useRef<MediaStream | null>(null)
   const platform = window.peercam?.platform ?? 'win32'
-  const { status, error, vcamOk, connect, disconnect } = useWebRTC()
+  const { status, error, vcamOk, connect, disconnect, localStream } = useWebRTC()
   const isActive = ['connecting', 'waiting_peer', 'waiting_host', 'reconnecting', 'connected'].includes(status)
 
   // ── Spinner keyframe injection ────────────────────────────────────────────
@@ -200,15 +199,6 @@ export default function App() {
       const tokenData = await tokenRes.json()
       if (!tokenRes.ok) throw new Error(tokenData.error ?? 'Failed to connect')
 
-      if (role === 'provider' && videoPreviewRef.current) {
-        try {
-          const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false })
-          previewStreamRef.current = stream
-          videoPreviewRef.current.srcObject = stream
-          videoPreviewRef.current.play().catch(() => {})
-        } catch { /* preview optional */ }
-      }
-
       const params: ConnectParams = {
         relayUrl:    tokenData.relayUrl,
         authToken:   tokenData.token,
@@ -231,20 +221,21 @@ export default function App() {
     setDisconnecting(true)
     await new Promise<void>(resolve => {
       disconnect()
-      stopPreview()
-      setTimeout(resolve, 400) // brief delay so UI shows spinner
+      setTimeout(resolve, 400)
     })
     setDisconnecting(false)
   }
 
   function stopPreview() {
-    previewStreamRef.current?.getTracks().forEach(t => t.stop())
-    previewStreamRef.current = null
     if (videoPreviewRef.current) videoPreviewRef.current.srcObject = null
   }
 
   useEffect(() => {
     if (status === 'idle' || status === 'error') stopPreview()
+    if (role === 'provider' && status === 'connected' && videoPreviewRef.current && localStream.current) {
+      videoPreviewRef.current.srcObject = localStream.current
+      videoPreviewRef.current.play().catch(() => {})
+    }
   }, [status]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Disabled state helpers ────────────────────────────────────────────────
