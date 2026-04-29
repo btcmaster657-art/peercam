@@ -69,6 +69,3 @@ next-env.d.ts
 
 # ── public downloads ──────────────────────────────────────────────────────────
 # Built installers are deployed via Vercel, not committed to git
-/public/downloads/*.AppImage
-/public/downloads/*.dmg
-/public/downloads/*.deb
