@@ -66,6 +66,3 @@ next-env.d.ts
 
 # BaseClasses — downloaded at build time, not committed
 /desktop/native/baseclasses
-
-# ── public downloads ──────────────────────────────────────────────────────────
-# Built installers are deployed via Vercel, not committed to git
