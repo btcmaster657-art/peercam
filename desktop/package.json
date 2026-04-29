@@ -1,0 +1,64 @@
+{
+  "name": "peercam-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "main": "dist/main/index.js",
+  "scripts": {
+    "dev": "concurrently \"npm run dev:renderer\" \"npm run dev:main\"",
+    "dev:renderer": "vite",
+    "dev:main": "tsc -p tsconfig.main.json --watch",
+    "build": "npm run build:renderer && npm run build:main",
+    "build:renderer": "vite build",
+    "build:main": "tsc -p tsconfig.main.json",
+    "build:native": "node-gyp rebuild --directory native",
+    "electron": "electron .",
+    "pack:win": "npm run build && electron-builder --win",
+    "pack:mac": "npm run build && electron-builder --mac",
+    "pack:linux": "npm run build && electron-builder --linux"
+  },
+  "dependencies": {
+    "node-addon-api": "^8",
+    "simple-peer": "^9.11.1",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "@types/simple-peer": "^9.11.9",
+    "@types/ws": "^8",
+    "@vitejs/plugin-react": "^4",
+    "concurrently": "^9",
+    "electron": "^34",
+    "electron-builder": "^25",
+    "node-gyp": "^11",
+    "typescript": "^5",
+    "vite": "^6"
+  },
+  "build": {
+    "appId": "app.peercam.desktop",
+    "productName": "PeerCam",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "native/build/**/*"
+    ],
+    "win": {
+      "target": "nsis",
+      "artifactName": "PeerCam-Setup.exe"
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "artifactName": "PeerCam-Setup.AppImage"
+    },
+    "mac": {
+      "target": "dmg",
+      "artifactName": "PeerCam-Setup.dmg"
+    }
+  }
+}
