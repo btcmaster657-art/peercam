@@ -5,7 +5,7 @@ const SESSION_COOKIE = process.env.NEXTAUTH_URL?.startsWith('https')
   ? '__Secure-next-auth.session-token'
   : 'next-auth.session-token'
 
-export function middleware(req: NextRequest) {
+export function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl
   const isAuthed = !!req.cookies.get(SESSION_COOKIE)?.value
 
