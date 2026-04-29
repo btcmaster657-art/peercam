@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { useWebRTC, Role, Status, ConnectParams } from './useWebRTC'
 
-const API_BASE = import.meta.env.VITE_API_BASE ?? 'https://peercam.app'
+const API_BASE = (typeof import.meta !== 'undefined' && (import.meta as Record<string, unknown>).env
+  ? ((import.meta as { env: Record<string, string> }).env.VITE_API_BASE)
+  : undefined) ?? 'https://peercam.app'
 
 const STATUS_LABEL: Record<Status, string> = {
   idle:         'Disconnected',

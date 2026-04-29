@@ -1,6 +1,13 @@
 import CredentialsProvider from 'next-auth/providers/credentials'
 import { supabaseAnon } from './supabase'
-import type { NextAuthOptions } from 'next-auth'
+import type { NextAuthOptions, DefaultSession } from 'next-auth'
+
+// Extend NextAuth session type to include user.id
+declare module 'next-auth' {
+  interface Session {
+    user: { id: string } & DefaultSession['user']
+  }
+}
 
 export const authOptions: NextAuthOptions = {
   session: { strategy: 'jwt' },
