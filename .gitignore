@@ -64,5 +64,8 @@ next-env.d.ts
 /desktop/native/vcam_filter/*.exp
 /desktop/native/vcam_filter/*.dll
 
+# OBS Virtual Camera standalone driver — downloaded at build time
+/desktop/native/obs-virtualcam-setup.exe
+
 # BaseClasses — downloaded at build time, not committed
 /desktop/native/baseclasses

@@ -2,7 +2,7 @@ import path from 'path'
 import { app } from 'electron'
 
 interface VCamAddon {
-  start(): boolean
+  start(): { ok: boolean; obs: boolean }
   stop(): void
   pushFrame(width: number, height: number, rgba: Buffer): void
 }
@@ -32,7 +32,7 @@ function loadAddon(): VCamAddon | null {
   }
 }
 
-export function startVirtualCamera(): { ok: boolean; error?: string } {
+export function startVirtualCamera(): { ok: boolean; obs?: boolean; error?: string } {
   if (process.platform === 'darwin') {
     console.log('[vcam] startVirtualCamera — skipped on darwin')
     return { ok: false, error: 'macOS virtual camera not supported' }
@@ -44,16 +44,16 @@ export function startVirtualCamera(): { ok: boolean; error?: string } {
     return { ok: false, error: 'Native addon failed to load' }
   }
   console.log('[vcam] startVirtualCamera — calling addon.start()')
-  let ok: boolean
+  let result: { ok: boolean; obs: boolean }
   try {
-    ok = addon.start()
+    result = addon.start()
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
     console.error(`[vcam] addon.start() threw: ${msg}`)
     return { ok: false, error: msg }
   }
-  console.log(`[vcam] addon.start() returned ok=${ok}`)
-  return ok ? { ok: true } : { ok: false, error: 'Failed to start virtual camera device' }
+  console.log(`[vcam] addon.start() returned ok=${result.ok} obs=${result.obs}`)
+  return result.ok ? { ok: true, obs: result.obs } : { ok: false, error: 'Failed to start virtual camera device' }
 }
 
 export function stopVirtualCamera() {

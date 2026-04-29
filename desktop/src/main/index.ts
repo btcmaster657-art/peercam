@@ -122,12 +122,12 @@ ipcMain.handle('vcam:start', async () => {
   writeLog('INFO', '[ipc] vcam:start called')
   try {
     const result = startVirtualCamera()
-    writeLog(result.ok ? 'INFO' : 'WARN', `[ipc] vcam:start result ok=${result.ok}${result.error ? ` error="${result.error}"` : ''}`)
+    writeLog(result.ok ? 'INFO' : 'WARN', `[ipc] vcam:start result ok=${result.ok} obs=${result.obs ?? false}${result.error ? ` error="${result.error}"` : ''}`)
     return result
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e)
     writeLog('ERROR', `[ipc] vcam:start threw: ${msg}`)
-    return { ok: false, error: msg }
+    return { ok: false, obs: false, error: msg }
   }
 })
 

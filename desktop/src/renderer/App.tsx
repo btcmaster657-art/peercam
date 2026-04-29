@@ -58,7 +58,7 @@ export default function App() {
 
   const videoPreviewRef  = useRef<HTMLVideoElement>(null)
   const platform = window.peercam?.platform ?? 'win32'
-  const { status, error, vcamOk, connect, disconnect, localStream } = useWebRTC()
+  const { status, error, vcamOk, vcamObs, connect, disconnect, localStream } = useWebRTC()
   const isActive = ['connecting', 'waiting_peer', 'waiting_host', 'reconnecting', 'connected'].includes(status)
 
   // ── Spinner keyframe injection ────────────────────────────────────────────
@@ -459,17 +459,18 @@ export default function App() {
         {status === 'connected' && role === 'requester' && (
           <>
             {vcamOk === true && (
-              <p style={s.hint}>Virtual camera active — select <strong style={{ color: '#f4f4f5' }}>PeerCam Virtual Camera</strong> in Zoom, Teams, or any app.</p>
+              <p style={s.hint}>
+                {vcamObs
+                  ? <>Virtual camera active — select <strong style={{ color: '#f4f4f5' }}>OBS Virtual Camera</strong> in Chrome, Zoom, Teams, or any app.</>
+                  : <>Virtual camera active — select <strong style={{ color: '#f4f4f5' }}>PeerCam Virtual Camera</strong> in Zoom, Teams, or native apps.</>
+                }
+              </p>
             )}
             {vcamOk === false && (
               <div style={s.warnBox}>
                 <p style={{ fontWeight: 600, color: '#fbbf24', marginBottom: 4 }}>⚠ Virtual camera unavailable</p>
-                <p>PeerCam Virtual Camera could not start. Try:</p>
-                <ol style={{ paddingLeft: 16, marginTop: 6, display: 'flex', flexDirection: 'column', gap: 3 }}>
-                  <li>Reinstall PeerCam — the virtual camera driver registers during install</li>
-                  <li>Run the installer as Administrator if registration failed</li>
-                </ol>
-                <p style={{ marginTop: 6, color: '#71717a' }}>The video feed is still connected and recording locally.</p>
+                <p>PeerCam Virtual Camera could not start. Try reinstalling PeerCam.</p>
+                <p style={{ marginTop: 6, color: '#71717a' }}>The video feed is still connected.</p>
               </div>
             )}
             {vcamOk === null && (

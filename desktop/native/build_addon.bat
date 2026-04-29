@@ -24,7 +24,7 @@ cl /LD /O2 /EHsc /MD /W0 /DWIN32 /DNDEBUG /DNAPI_DISABLE_CPP_EXCEPTIONS /DBUILDI
    /I"%NODE_INC%" ^
    vcam.cc vcam_win.cc ^
    "%NODE_LIB%" ^
-   kernel32.lib msvcrt.lib vcruntime.lib ucrt.lib ^
+   kernel32.lib advapi32.lib msvcrt.lib vcruntime.lib ucrt.lib ^
    /Fe:%OUT%\vcam.node ^
    /link /SUBSYSTEM:WINDOWS /DLL
 

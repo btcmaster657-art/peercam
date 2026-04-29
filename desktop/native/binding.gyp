@@ -10,7 +10,7 @@
       "conditions": [
         ["OS=='win'", {
           "sources": ["vcam_win.cc"],
-          "libraries": ["-lole32", "-loleaut32", "-lstrmiids"]
+          "libraries": ["-lole32", "-loleaut32", "-lstrmiids", "-ladvapi32"]
         }],
         ["OS=='linux'", {
           "sources": ["vcam_linux.cc"],

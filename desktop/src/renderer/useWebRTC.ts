@@ -4,7 +4,7 @@ import SimplePeer, { Instance, SignalData } from 'simple-peer'
 declare global {
   interface Window {
     peercam: {
-      vcamStart:    () => Promise<{ ok: boolean; error?: string }>
+      vcamStart:    () => Promise<{ ok: boolean; obs?: boolean; error?: string }>
       vcamStop:     () => Promise<void>
       vcamPushFrame:(w: number, h: number, rgba: Uint8Array) => Promise<void>
       platform:     string
@@ -27,6 +27,8 @@ export interface ConnectParams {
 }
 
 const FRAME_MS = 1000 / 30
+const MAX_FRAME_WIDTH = 1920
+const MAX_FRAME_HEIGHT = 1080
 
 // ── Logger ────────────────────────────────────────────────────────────────────
 function log(level: 'INFO' | 'WARN' | 'ERROR', ...parts: unknown[]) {
@@ -38,10 +40,24 @@ function log(level: 'INFO' | 'WARN' | 'ERROR', ...parts: unknown[]) {
   window.peercam?.log(level, msg).catch(() => {})
 }
 
+function normalizeFrameSize(sourceWidth: number, sourceHeight: number) {
+  const scale = Math.min(
+    MAX_FRAME_WIDTH / sourceWidth,
+    MAX_FRAME_HEIGHT / sourceHeight,
+    1,
+  )
+
+  const width = Math.max(2, (Math.floor(sourceWidth * scale) & ~1))
+  const height = Math.max(2, (Math.floor(sourceHeight * scale) & ~1))
+
+  return { width, height }
+}
+
 export function useWebRTC() {
   const [status, setStatus] = useState<Status>('idle')
   const [error,  setError]  = useState<string | null>(null)
-  const [vcamOk, setVcamOk] = useState<boolean | null>(null)
+  const [vcamOk, setVcamOk]   = useState<boolean | null>(null)
+  const [vcamObs, setVcamObs] = useState<boolean>(false)
 
   const wsRef          = useRef<WebSocket | null>(null)
   const peerRef        = useRef<Instance | null>(null)
@@ -121,16 +137,19 @@ export function useWebRTC() {
     const ctx = canvas.getContext('2d', { willReadFrequently: true })!
     canvasRef.current = canvas
 
+    setVcamOk(null)
+    setVcamObs(false)
     log('INFO', 'vcam:start — calling IPC')
     window.peercam?.vcamStart()
-      .then(({ ok, error: err }) => {
+      .then(({ ok, obs, error: err }) => {
         if (ok) {
           vcamActiveRef.current = true
           setVcamOk(true)
-          log('INFO', 'vcam:start — ok=true, shared memory attached')
+          setVcamObs(obs ?? false)
+          log('INFO', `vcam:start — ok=true obs=${obs ?? false}`)
         } else {
           setVcamOk(false)
-          log('WARN', `vcam:start — ok=false error="${err ?? 'unknown'}" — is PeerCam Virtual Camera driver registered?`)
+          log('WARN', `vcam:start — ok=false error="${err ?? 'unknown'}"`)
         }
       })
       .catch(e => {
@@ -151,16 +170,21 @@ export function useWebRTC() {
       if (frameBusyRef.current) { frameDropRef.current++; return }
       lastFrameRef.current = now
 
-      if (v.videoWidth !== lastW || v.videoHeight !== lastH) {
-        lastW = v.videoWidth
-        lastH = v.videoHeight
+      const { width, height } = normalizeFrameSize(v.videoWidth, v.videoHeight)
+      if (width !== lastW || height !== lastH) {
+        lastW = width
+        lastH = height
         canvas.width  = lastW
         canvas.height = lastH
-        log('INFO', `frame pipe resolution: ${lastW}×${lastH}`)
+        if (lastW !== v.videoWidth || lastH !== v.videoHeight) {
+          log('INFO', `frame pipe resolution: ${v.videoWidth}×${v.videoHeight} → ${lastW}×${lastH}`)
+        } else {
+          log('INFO', `frame pipe resolution: ${lastW}×${lastH}`)
+        }
       }
       if (!lastW || !lastH) return
 
-      ctx.drawImage(v, 0, 0)
+      ctx.drawImage(v, 0, 0, lastW, lastH)
       if (!vcamActiveRef.current) return
 
       const rgba = new Uint8Array(ctx.getImageData(0, 0, lastW, lastH).data.buffer)
@@ -523,5 +547,5 @@ export function useWebRTC() {
     disconnect()
   }, [disconnect])
 
-  return { status, error, vcamOk, connect, disconnect, localStream: localStreamRef }
+  return { status, error, vcamOk, vcamObs, connect, disconnect, localStream: localStreamRef }
 }

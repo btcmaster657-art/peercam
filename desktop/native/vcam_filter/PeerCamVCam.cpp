@@ -15,6 +15,7 @@
 #include <streams.h>
 #include <initguid.h>
 #include <uuids.h>
+#include <cwchar>
 #include <cstring>
 #include <cmath>
 #include "../peercam_shm.h"
@@ -194,11 +195,172 @@ CFactoryTemplate g_Templates[] = {
     { FILTER_NAME, &CLSID_PeerCamVCam, CPeerCamFilter::CreateInstance, nullptr, &sudFilter }
 };
 int g_cTemplates = 1;
+static HINSTANCE g_hInstance = nullptr;
 
-STDAPI DllRegisterServer()   { return AMovieDllRegisterServer2(TRUE); }
-STDAPI DllUnregisterServer() { return AMovieDllRegisterServer2(FALSE); }
+static DWORD WideStringBytes(const wchar_t* text)
+{
+    return static_cast<DWORD>((wcslen(text) + 1) * sizeof(wchar_t));
+}
+
+static HRESULT RegisterComClass()
+{
+    wchar_t modulePath[MAX_PATH] = {};
+    if (!GetModuleFileNameW(g_hInstance, modulePath, MAX_PATH)) {
+        return HRESULT_FROM_WIN32(GetLastError());
+    }
+
+    wchar_t clsidString[64] = {};
+    StringFromGUID2(CLSID_PeerCamVCam, clsidString, _countof(clsidString));
+
+    wchar_t classKeyPath[128] = {};
+    swprintf_s(classKeyPath, L"Software\\Classes\\CLSID\\%ls", clsidString);
+
+    HKEY classKey = nullptr;
+    HKEY serverKey = nullptr;
+    LONG status = RegCreateKeyExW(HKEY_CURRENT_USER, classKeyPath, 0, nullptr, 0, KEY_WRITE, nullptr, &classKey, nullptr);
+    if (status != ERROR_SUCCESS) {
+        return HRESULT_FROM_WIN32(status);
+    }
+
+    status = RegSetValueExW(classKey, nullptr, 0, REG_SZ,
+        reinterpret_cast<const BYTE*>(FILTER_NAME), WideStringBytes(FILTER_NAME));
+    if (status == ERROR_SUCCESS) {
+        status = RegCreateKeyExW(classKey, L"InprocServer32", 0, nullptr, 0, KEY_WRITE, nullptr, &serverKey, nullptr);
+    }
+    if (status == ERROR_SUCCESS) {
+        status = RegSetValueExW(serverKey, nullptr, 0, REG_SZ,
+            reinterpret_cast<const BYTE*>(modulePath), WideStringBytes(modulePath));
+    }
+    if (status == ERROR_SUCCESS) {
+        static const wchar_t threadingModel[] = L"Both";
+        status = RegSetValueExW(serverKey, L"ThreadingModel", 0, REG_SZ,
+            reinterpret_cast<const BYTE*>(threadingModel), WideStringBytes(threadingModel));
+    }
+
+    if (serverKey) {
+        RegCloseKey(serverKey);
+    }
+    if (classKey) {
+        RegCloseKey(classKey);
+    }
+
+    return status == ERROR_SUCCESS ? S_OK : HRESULT_FROM_WIN32(status);
+}
+
+static HRESULT UnregisterComClass()
+{
+    wchar_t clsidString[64] = {};
+    StringFromGUID2(CLSID_PeerCamVCam, clsidString, _countof(clsidString));
+
+    wchar_t classKeyPath[128] = {};
+    swprintf_s(classKeyPath, L"Software\\Classes\\CLSID\\%ls", clsidString);
+
+    const LONG status = RegDeleteTreeW(HKEY_CURRENT_USER, classKeyPath);
+    if (status == ERROR_FILE_NOT_FOUND) {
+        return S_OK;
+    }
+    return status == ERROR_SUCCESS ? S_OK : HRESULT_FROM_WIN32(status);
+}
+
+static HRESULT RegisterVideoInputCategory(BOOL reg)
+{
+    wchar_t clsidString[64] = {};
+    StringFromGUID2(CLSID_PeerCamVCam, clsidString, _countof(clsidString));
+
+    wchar_t keyPath[192] = {};
+    swprintf_s(
+        keyPath,
+        L"Software\\Classes\\CLSID\\{860BB310-5D01-11d0-BD3B-00A0C911CE86}\\Instance\\%ls",
+        clsidString
+    );
+
+    if (!reg) {
+        const LONG status = RegDeleteTreeW(HKEY_CURRENT_USER, keyPath);
+        if (status == ERROR_FILE_NOT_FOUND) {
+            return S_OK;
+        }
+        return status == ERROR_SUCCESS ? S_OK : HRESULT_FROM_WIN32(status);
+    }
+
+    static const BYTE filterData[] = {
+        0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x20, 0x00,
+        0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x30, 0x70, 0x69, 0x33, 0x08, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x30, 0x74, 0x79, 0x33, 0x00, 0x00, 0x00, 0x00,
+        0x38, 0x00, 0x00, 0x00, 0x48, 0x00, 0x00, 0x00,
+        0x76, 0x69, 0x64, 0x73, 0x00, 0x00, 0x10, 0x00,
+        0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71,
+        0x59, 0x55, 0x59, 0x32, 0x00, 0x00, 0x10, 0x00,
+        0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71
+    };
+
+    HKEY key = nullptr;
+    const LONG createStatus = RegCreateKeyExW(HKEY_CURRENT_USER, keyPath, 0, nullptr, 0, KEY_WRITE, nullptr, &key, nullptr);
+    if (createStatus != ERROR_SUCCESS) {
+        return HRESULT_FROM_WIN32(createStatus);
+    }
+
+    LONG status = RegSetValueExW(
+        key,
+        L"FriendlyName",
+        0,
+        REG_SZ,
+        reinterpret_cast<const BYTE*>(FILTER_NAME),
+        WideStringBytes(FILTER_NAME)
+    );
+    if (status == ERROR_SUCCESS) {
+        status = RegSetValueExW(
+            key,
+            L"CLSID",
+            0,
+            REG_SZ,
+            reinterpret_cast<const BYTE*>(clsidString),
+            WideStringBytes(clsidString)
+        );
+    }
+    if (status == ERROR_SUCCESS) {
+        status = RegSetValueExW(
+            key,
+            L"FilterData",
+            0,
+            REG_BINARY,
+            filterData,
+            sizeof(filterData)
+        );
+    }
+
+    RegCloseKey(key);
+    return status == ERROR_SUCCESS ? S_OK : HRESULT_FROM_WIN32(status);
+}
+
+STDAPI DllRegisterServer()
+{
+    HRESULT hr = RegisterComClass();
+    if (FAILED(hr)) {
+        return hr;
+    }
+
+    hr = RegisterVideoInputCategory(TRUE);
+    if (FAILED(hr)) {
+        RegisterVideoInputCategory(FALSE);
+        UnregisterComClass();
+    }
+
+    return hr;
+}
+
+STDAPI DllUnregisterServer()
+{
+    RegisterVideoInputCategory(FALSE);
+    return UnregisterComClass();
+}
 
 extern "C" BOOL WINAPI DllEntryPoint(HINSTANCE, ULONG, LPVOID);
 BOOL WINAPI DllMain(HINSTANCE hDll, DWORD dwReason, LPVOID lpReserved) {
+    if (dwReason == DLL_PROCESS_ATTACH) {
+        g_hInstance = hDll;
+    }
     return DllEntryPoint(hDll, dwReason, lpReserved);
 }
