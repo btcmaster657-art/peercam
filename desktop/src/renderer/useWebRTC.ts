@@ -132,6 +132,12 @@ export function useWebRTC() {
       log('WARN', 'frame pipe video stalled'))
     video.addEventListener('ended', () =>
       log('WARN', 'frame pipe video ended'))
+    video.addEventListener('emptied', () =>
+      log('WARN', 'frame pipe video emptied'))
+    video.addEventListener('suspend', () =>
+      log('WARN', 'frame pipe video suspended'))
+    video.addEventListener('waiting', () =>
+      log('WARN', 'frame pipe video waiting for data'))
 
     const canvas = document.createElement('canvas')
     const ctx = canvas.getContext('2d', { willReadFrequently: true })!
@@ -160,6 +166,7 @@ export function useWebRTC() {
     pipeStartRef.current = Date.now()
     let lastW = 0, lastH = 0
     let lastStatLog = Date.now()
+    let firstFramePushed = false
 
     const pump = () => {
       rafRef.current = requestAnimationFrame(pump)
@@ -198,7 +205,13 @@ export function useWebRTC() {
       }
 
       window.peercam?.vcamPushFrame(lastW, lastH, rgba)
-        .then(() => { frameBusyRef.current = false })
+        .then(() => {
+          frameBusyRef.current = false
+          if (!firstFramePushed) {
+            firstFramePushed = true
+            log('INFO', `vcam:pushFrame — first frame pushed ${lastW}×${lastH}`)
+          }
+        })
         .catch(e => {
           frameBusyRef.current = false
           log('WARN', 'vcam:pushFrame error:', e?.message ?? String(e))

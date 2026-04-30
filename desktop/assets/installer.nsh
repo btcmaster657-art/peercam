@@ -32,6 +32,11 @@
   ${Loop}
 !macroend
 
+; ── Broadcast WM_DEVICECHANGE so Chrome/Zoom/Teams re-enumerate immediately ──
+!macro BroadcastDeviceChange
+  ExecWait '"$INSTDIR\resources\notify_devices.exe"'
+!macroend
+
 ; ── Fires at the very start of the installer — before any page is shown ──────
 !macro customInit
   !insertmacro KillPeerCam
@@ -41,6 +46,8 @@
 !macro CleanPeerCamArtifacts
   ; Unregister virtual camera DLL before removing files
   ExecWait '$SYSDIR\regsvr32.exe /s /u "$INSTDIR\resources\PeerCamVCam.dll"'
+  ; Notify apps that the device is gone
+  !insertmacro BroadcastDeviceChange
 
   ; Electron userData (config, logs, cache)
   RMDir /r "$APPDATA\peercam-desktop"
@@ -82,6 +89,8 @@
   ; Register PeerCam DirectShow virtual camera
   DetailPrint "Registering PeerCam Virtual Camera..."
   ExecWait '$SYSDIR\regsvr32.exe /s "$INSTDIR\resources\PeerCamVCam.dll"'
+  ; Notify apps that a new device is available
+  !insertmacro BroadcastDeviceChange
 !macroend
 
 ; ── customUnInstall — full cleanup on uninstall ───────────────────────────────

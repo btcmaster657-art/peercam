@@ -11,20 +11,20 @@ call %VCVARS%
 
 :: Get node headers path
 set NAPI_INC=c:\Users\ajibe\peercam\desktop\node_modules\node-addon-api
-set NODE_INC=C:\Users\ajibe\AppData\Local\node-gyp\Cache\24.15.0\include\node
-set NODE_LIB=C:\Users\ajibe\AppData\Local\node-gyp\Cache\24.15.0\x64\node.lib
+set NODE_INC=C:\Users\ajibe\AppData\Local\node-gyp\Cache\34.5.8\include\node
+set PEERCAM_LIB=%~dp0peercam_node.lib
 set OUT=build\Release
 
 if not exist %OUT% mkdir %OUT%
 
 echo Building vcam.node...
 
-cl /LD /O2 /EHsc /MD /W0 /DWIN32 /DNDEBUG /DNAPI_DISABLE_CPP_EXCEPTIONS /DBUILDING_NODE_EXTENSION ^
+cl /LD /O2 /EHsc /MT /W0 /DWIN32 /DNDEBUG /DNAPI_DISABLE_CPP_EXCEPTIONS /DBUILDING_NODE_EXTENSION ^
    /I"%NAPI_INC%" ^
    /I"%NODE_INC%" ^
    vcam.cc vcam_win.cc ^
-   "%NODE_LIB%" ^
-   kernel32.lib advapi32.lib msvcrt.lib vcruntime.lib ucrt.lib ^
+   "%PEERCAM_LIB%" ^
+   kernel32.lib advapi32.lib ^
    /Fe:%OUT%\vcam.node ^
    /link /SUBSYSTEM:WINDOWS /DLL
 

@@ -10,11 +10,13 @@
 // Unregister: regsvr32 /u PeerCamVCam.dll
 
 #define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
 #include <windows.h>
 #include <dshow.h>
 #include <streams.h>
 #include <initguid.h>
 #include <uuids.h>
+#include <algorithm>
 #include <cwchar>
 #include <cstring>
 #include <cmath>
@@ -29,18 +31,116 @@ static const WCHAR FILTER_NAME[] = L"PeerCam Virtual Camera";
 static const int   DEFAULT_WIDTH  = 640;
 static const int   DEFAULT_HEIGHT = 480;
 static const int   DEFAULT_FPS    = 30;
+static const DWORD FRAME_STALE_TIMEOUT_MS = 1500;
+
+struct VideoCapability {
+    LONG width;
+    LONG height;
+    LONG fps;
+};
+
+static const VideoCapability kCapabilities[] = {
+    { 320,  180, 30 }, { 320,  180, 15 },
+    { 320,  240, 30 }, { 320,  240, 15 },
+    { 424,  240, 30 }, { 424,  240, 15 },
+    { 640,  360, 30 }, { 640,  360, 15 },
+    { 640,  480, 30 }, { 640,  480, 15 },
+    { 848,  480, 30 }, { 848,  480, 15 },
+    { 960,  540, 30 }, { 960,  540, 15 },
+    { 1280, 720, 30 }, { 1280, 720, 15 },
+};
+static const size_t kDefaultCapabilityIndex = 8; // 640x480 @ 30fps
 
 // ── RGBA → YUY2 conversion ────────────────────────────────────────────────────
+static inline BYTE ClampToByte(float value) {
+    if (value < 0.0f) return 0;
+    if (value > 255.0f) return 255;
+    return static_cast<BYTE>(value);
+}
+
+static inline BYTE RgbToY(BYTE r, BYTE g, BYTE b) {
+    return ClampToByte((0.299f * r) + (0.587f * g) + (0.114f * b));
+}
+
+static inline BYTE RgbToU(BYTE r, BYTE g, BYTE b) {
+    return ClampToByte(128.0f - (0.168736f * r) - (0.331264f * g) + (0.5f * b));
+}
+
+static inline BYTE RgbToV(BYTE r, BYTE g, BYTE b) {
+    return ClampToByte(128.0f + (0.5f * r) - (0.418688f * g) - (0.081312f * b));
+}
+
 static void RgbaToYuy2(const BYTE* rgba, BYTE* yuy2, int width, int height) {
     const int pixels = width * height;
     for (int i = 0; i < pixels; i += 2) {
         const BYTE* p0 = rgba + (i * 4);
         const BYTE* p1 = rgba + ((i + 1) * 4);
-        const BYTE y0 = (BYTE)((0.299f * p0[0]) + (0.587f * p0[1]) + (0.114f * p0[2]));
-        const BYTE y1 = (BYTE)((0.299f * p1[0]) + (0.587f * p1[1]) + (0.114f * p1[2]));
-        const BYTE u  = (BYTE)(128.0f - (0.168736f * p0[0]) - (0.331264f * p0[1]) + (0.5f * p0[2]));
-        const BYTE v  = (BYTE)(128.0f + (0.5f * p0[0]) - (0.418688f * p0[1]) - (0.081312f * p0[2]));
+        const BYTE y0 = RgbToY(p0[0], p0[1], p0[2]);
+        const BYTE y1 = RgbToY(p1[0], p1[1], p1[2]);
+        const BYTE u  = RgbToU(p0[0], p0[1], p0[2]);
+        const BYTE v  = RgbToV(p0[0], p0[1], p0[2]);
         *yuy2++ = y0; *yuy2++ = u; *yuy2++ = y1; *yuy2++ = v;
+    }
+}
+
+static void FillSolidYuy2(BYTE* yuy2, int width, int height, BYTE r, BYTE g, BYTE b) {
+    const BYTE y = RgbToY(r, g, b);
+    const BYTE u = RgbToU(r, g, b);
+    const BYTE v = RgbToV(r, g, b);
+    const int pixels = width * height;
+    for (int i = 0; i < pixels; i += 2) {
+        *yuy2++ = y; *yuy2++ = u; *yuy2++ = y; *yuy2++ = v;
+    }
+}
+
+static void ScaleRgbaToYuy2Letterboxed(
+    const BYTE* rgbaSrc,
+    int srcWidth,
+    int srcHeight,
+    BYTE* yuy2Dst,
+    int dstWidth,
+    int dstHeight,
+    BYTE bgR,
+    BYTE bgG,
+    BYTE bgB)
+{
+    FillSolidYuy2(yuy2Dst, dstWidth, dstHeight, bgR, bgG, bgB);
+    if (!rgbaSrc || srcWidth <= 0 || srcHeight <= 0 || dstWidth <= 0 || dstHeight <= 0) {
+        return;
+    }
+
+    const float scale = std::min(
+        static_cast<float>(dstWidth) / static_cast<float>(srcWidth),
+        static_cast<float>(dstHeight) / static_cast<float>(srcHeight)
+    );
+    int drawWidth = std::max(2, static_cast<int>(std::floor(srcWidth * scale)));
+    int drawHeight = std::max(2, static_cast<int>(std::floor(srcHeight * scale)));
+    if (drawWidth & 1) {
+        drawWidth -= 1;
+    }
+    drawWidth = std::max(2, std::min(drawWidth, dstWidth));
+    drawHeight = std::max(2, std::min(drawHeight, dstHeight));
+
+    const int offsetX = ((dstWidth - drawWidth) / 2) & ~1;
+    const int offsetY = (dstHeight - drawHeight) / 2;
+
+    for (int y = 0; y < drawHeight; ++y) {
+        const int dstY = offsetY + y;
+        const int srcY = std::min(srcHeight - 1, (y * srcHeight) / drawHeight);
+        BYTE* dstRow = yuy2Dst + (dstY * dstWidth * 2);
+        for (int x = 0; x < drawWidth; x += 2) {
+            const int dstX = offsetX + x;
+            const int srcX0 = std::min(srcWidth - 1, (x * srcWidth) / drawWidth);
+            const int srcX1 = std::min(srcWidth - 1, ((x + 1) * srcWidth) / drawWidth);
+
+            const BYTE* p0 = rgbaSrc + ((srcY * srcWidth) + srcX0) * 4;
+            const BYTE* p1 = rgbaSrc + ((srcY * srcWidth) + srcX1) * 4;
+            BYTE* dst = dstRow + (dstX * 2);
+            dst[0] = RgbToY(p0[0], p0[1], p0[2]);
+            dst[1] = RgbToU(p0[0], p0[1], p0[2]);
+            dst[2] = RgbToY(p1[0], p1[1], p1[2]);
+            dst[3] = RgbToV(p0[0], p0[1], p0[2]);
+        }
     }
 }
 
@@ -144,8 +244,37 @@ static const BYTE kSBFont[][7] = {
     {0x08,0x15,0x02,0x00,0x00,0x00,0x00}, // '~'
 };
 
+static BYTE  g_standbyRgba[DEFAULT_WIDTH * DEFAULT_HEIGHT * 4];
 static BYTE  g_standbyYuy2[DEFAULT_WIDTH * DEFAULT_HEIGHT * 2];
 static bool  g_standbyReady = false;
+
+// ── DLL logger (writes to %APPDATA%\peercam-desktop\vcam_filter.log) ──────────────
+static HANDLE g_hLogFile = INVALID_HANDLE_VALUE;
+
+static void DllLog(const char* fmt, ...) {
+    if (g_hLogFile == INVALID_HANDLE_VALUE) return;
+    char buf[512];
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    int hdrLen = wsprintfA(buf, "[%02d:%02d:%02d.%03d] [vcam_dll] ",
+        st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
+    va_list args;
+    va_start(args, fmt);
+    int msgLen = wvsprintfA(buf + hdrLen, fmt, args);
+    va_end(args);
+    buf[hdrLen + msgLen] = '\n';
+    DWORD written = 0;
+    WriteFile(g_hLogFile, buf, (DWORD)(hdrLen + msgLen + 1), &written, nullptr);
+}
+
+static void OpenDllLog() {
+    wchar_t appData[MAX_PATH] = {};
+    GetEnvironmentVariableW(L"APPDATA", appData, MAX_PATH);
+    wchar_t logPath[MAX_PATH] = {};
+    swprintf_s(logPath, L"%ls\\peercam-desktop\\vcam_filter.log", appData);
+    g_hLogFile = CreateFileW(logPath, FILE_APPEND_DATA, FILE_SHARE_READ,
+        nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+}
 
 static void SB_SetPixelRgba(BYTE* rgba, int W, int x, int y, BYTE r, BYTE g, BYTE b) {
     if (x < 0 || x >= W || y < 0 || y >= DEFAULT_HEIGHT) return;
@@ -175,7 +304,7 @@ static void SB_DrawString(BYTE* rgba, int W, int x, int y, const char* text, BYT
 
 static void BuildStandbyFrame() {
     const int W = DEFAULT_WIDTH, H = DEFAULT_HEIGHT;
-    static BYTE rgba[DEFAULT_WIDTH * DEFAULT_HEIGHT * 4];
+    BYTE* rgba = g_standbyRgba;
 
     // Dark background
     for (int i = 0; i < (W * H); i++) {
@@ -214,127 +343,458 @@ static void BuildStandbyFrame() {
     g_standbyReady = true;
 }
 
+static long FrameBytes(const VideoCapability& cap) {
+    return cap.width * cap.height * 2;
+}
+
+static HRESULT BuildVideoMediaType(const VideoCapability& cap, CMediaType* pmt) {
+    VIDEOINFOHEADER* pvi = reinterpret_cast<VIDEOINFOHEADER*>(
+        pmt->AllocFormatBuffer(sizeof(VIDEOINFOHEADER)));
+    if (!pvi) {
+        return E_OUTOFMEMORY;
+    }
+    ZeroMemory(pvi, sizeof(VIDEOINFOHEADER));
+    SetRect(&pvi->rcSource, 0, 0, cap.width, cap.height);
+    SetRect(&pvi->rcTarget, 0, 0, cap.width, cap.height);
+    pvi->bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    pvi->bmiHeader.biWidth = cap.width;
+    pvi->bmiHeader.biHeight = -cap.height;
+    pvi->bmiHeader.biPlanes = 1;
+    pvi->bmiHeader.biBitCount = 16;
+    pvi->bmiHeader.biCompression = MAKEFOURCC('Y','U','Y','2');
+    pvi->bmiHeader.biSizeImage = FrameBytes(cap);
+    pvi->AvgTimePerFrame = UNITS / cap.fps;
+    pmt->SetType(&MEDIATYPE_Video);
+    pmt->SetSubtype(&MEDIASUBTYPE_YUY2);
+    pmt->SetFormatType(&FORMAT_VideoInfo);
+    pmt->SetTemporalCompression(FALSE);
+    pmt->SetSampleSize(FrameBytes(cap));
+    return S_OK;
+}
+
+static void BuildVideoStreamCaps(const VideoCapability& cap, VIDEO_STREAM_CONFIG_CAPS* caps) {
+    ZeroMemory(caps, sizeof(*caps));
+    caps->guid = FORMAT_VideoInfo;
+    caps->VideoStandard = AnalogVideo_None;
+    caps->InputSize.cx = cap.width;
+    caps->InputSize.cy = cap.height;
+    caps->MinCroppingSize.cx = cap.width;
+    caps->MinCroppingSize.cy = cap.height;
+    caps->MaxCroppingSize.cx = cap.width;
+    caps->MaxCroppingSize.cy = cap.height;
+    caps->CropGranularityX = 1;
+    caps->CropGranularityY = 1;
+    caps->CropAlignX = 1;
+    caps->CropAlignY = 1;
+    caps->MinOutputSize.cx = cap.width;
+    caps->MinOutputSize.cy = cap.height;
+    caps->MaxOutputSize.cx = cap.width;
+    caps->MaxOutputSize.cy = cap.height;
+    caps->OutputGranularityX = 1;
+    caps->OutputGranularityY = 1;
+    caps->StretchTapsX = 0;
+    caps->StretchTapsY = 0;
+    caps->ShrinkTapsX = 0;
+    caps->ShrinkTapsY = 0;
+    caps->MinFrameInterval = UNITS / cap.fps;
+    caps->MaxFrameInterval = UNITS / cap.fps;
+    caps->MinBitsPerSecond = cap.width * cap.height * 16 * cap.fps;
+    caps->MaxBitsPerSecond = caps->MinBitsPerSecond;
+}
+
+static bool ParseCapabilityFromMediaType(
+    const AM_MEDIA_TYPE* pmt,
+    size_t* capIndex,
+    VideoCapability* parsedCap)
+{
+    if (!pmt || pmt->majortype != MEDIATYPE_Video || pmt->subtype != MEDIASUBTYPE_YUY2) {
+        return false;
+    }
+    if (pmt->formattype != FORMAT_VideoInfo || !pmt->pbFormat || pmt->cbFormat < sizeof(VIDEOINFOHEADER)) {
+        return false;
+    }
+
+    const VIDEOINFOHEADER* pvi = reinterpret_cast<const VIDEOINFOHEADER*>(pmt->pbFormat);
+    const LONG width = pvi->bmiHeader.biWidth;
+    const LONG height = std::abs(pvi->bmiHeader.biHeight);
+    LONG fps = DEFAULT_FPS;
+    if (pvi->AvgTimePerFrame > 0) {
+        fps = static_cast<LONG>((UNITS + (pvi->AvgTimePerFrame / 2)) / pvi->AvgTimePerFrame);
+    }
+
+    for (size_t i = 0; i < _countof(kCapabilities); ++i) {
+        const VideoCapability& cap = kCapabilities[i];
+        if (cap.width == width && cap.height == height && cap.fps == fps) {
+            if (capIndex) {
+                *capIndex = i;
+            }
+            if (parsedCap) {
+                *parsedCap = cap;
+            }
+            return true;
+        }
+    }
+
+    return false;
+}
+
 // ── Stream ────────────────────────────────────────────────────────────────────
-class CPeerCamStream : public CSourceStream {
+class CPeerCamStream : public CSourceStream, public IAMStreamConfig, public IKsPropertySet {
 public:
+    DECLARE_IUNKNOWN
+
     CPeerCamStream(HRESULT* phr, CSource* pParent, LPCWSTR pName)
         : CSourceStream(pName, phr, pParent, L"Output")
         , m_hMapFile(nullptr), m_pShm(nullptr)
         , m_hEvent(nullptr), m_hMutex(nullptr)
         , m_lastFrameCount(0)
-        , m_width(DEFAULT_WIDTH), m_height(DEFAULT_HEIGHT)
+        , m_lastFrameTick(0)
+        , m_lastLiveFrameTick(0)
+        , m_width(DEFAULT_WIDTH), m_height(DEFAULT_HEIGHT), m_fps(DEFAULT_FPS)
+        , m_shmWasOpen(false), m_fillCount(0)
+        , m_lastRenderMode(-1)
     {
         if (!g_standbyReady) BuildStandbyFrame();
-        // Open shared memory (created by vcam_win.cc when PeerCam connects)
-        m_hMapFile = OpenFileMappingA(FILE_MAP_READ, FALSE, PEERCAM_SHM_NAME);
-        if (m_hMapFile)
-            m_pShm = MapViewOfFile(m_hMapFile, FILE_MAP_READ, 0, 0, PEERCAM_SHM_SIZE);
-        m_hEvent = OpenEventA(SYNCHRONIZE, FALSE, PEERCAM_EVENT_NAME);
-        m_hMutex = OpenMutexA(SYNCHRONIZE, FALSE, PEERCAM_MUTEX_NAME);
+        TryOpenSharedMemory();
+        DllLog("stream_created shm=%s pid=%lu", m_pShm ? "open" : "none", GetCurrentProcessId());
     }
 
     ~CPeerCamStream() {
-        if (m_pShm)     UnmapViewOfFile(m_pShm);
-        if (m_hMapFile) CloseHandle(m_hMapFile);
-        if (m_hEvent)   CloseHandle(m_hEvent);
-        if (m_hMutex)   CloseHandle(m_hMutex);
+        CloseSharedMemory();
+    }
+
+    STDMETHODIMP NonDelegatingQueryInterface(REFIID riid, void** ppv) override {
+        if (riid == IID_IAMStreamConfig) {
+            return GetInterface(static_cast<IAMStreamConfig*>(this), ppv);
+        }
+        if (riid == IID_IKsPropertySet) {
+            return GetInterface(static_cast<IKsPropertySet*>(this), ppv);
+        }
+        return CSourceStream::NonDelegatingQueryInterface(riid, ppv);
+    }
+
+    HRESULT OnThreadCreate() override {
+        m_rtSampleTime = 0;
+        m_lastFrameTick = 0;
+        return S_OK;
+    }
+
+    HRESULT CheckMediaType(const CMediaType* pmt) override {
+        return ParseCapabilityFromMediaType(pmt, nullptr, nullptr) ? S_OK : VFW_E_TYPE_NOT_ACCEPTED;
+    }
+
+    HRESULT GetMediaType(int iPosition, CMediaType* pmt) override {
+        if (iPosition < 0) {
+            return E_INVALIDARG;
+        }
+        if (static_cast<size_t>(iPosition) >= _countof(kCapabilities)) {
+            return VFW_S_NO_MORE_ITEMS;
+        }
+        return BuildVideoMediaType(kCapabilities[iPosition], pmt);
     }
 
     HRESULT GetMediaType(CMediaType* pmt) override {
         CAutoLock lock(m_pFilter->pStateLock());
-        // Read actual dimensions from shared memory if available
-        if (m_pShm) {
-            const PeerCamShmHeader* hdr = reinterpret_cast<const PeerCamShmHeader*>(m_pShm);
-            if (hdr->width > 0 && hdr->width <= PEERCAM_MAX_WIDTH &&
-                hdr->height > 0 && hdr->height <= PEERCAM_MAX_HEIGHT) {
-                m_width  = (int)hdr->width;
-                m_height = (int)hdr->height;
-            }
+        DllLog("GetMediaType negotiating %ldx%ld YUY2 @%ldfps pid=%lu",
+            m_width, m_height, m_fps, GetCurrentProcessId());
+        return BuildVideoMediaType({ m_width, m_height, m_fps }, pmt);
+    }
+
+    STDMETHODIMP SetFormat(AM_MEDIA_TYPE* pmt) override {
+        if (!pmt) {
+            return E_POINTER;
         }
-        VIDEOINFO* pvi = (VIDEOINFO*)pmt->AllocFormatBuffer(sizeof(VIDEOINFO));
-        if (!pvi) return E_OUTOFMEMORY;
-        ZeroMemory(pvi, sizeof(VIDEOINFO));
-        pvi->bmiHeader.biSize        = sizeof(BITMAPINFOHEADER);
-        pvi->bmiHeader.biWidth       = m_width;
-        pvi->bmiHeader.biHeight      = -m_height;
-        pvi->bmiHeader.biPlanes      = 1;
-        pvi->bmiHeader.biBitCount    = 16;
-        pvi->bmiHeader.biCompression = MAKEFOURCC('Y','U','Y','2');
-        pvi->bmiHeader.biSizeImage   = m_width * m_height * 2;
-        pvi->AvgTimePerFrame         = UNITS / DEFAULT_FPS;
-        pmt->SetType(&MEDIATYPE_Video);
-        pmt->SetFormatType(&FORMAT_VideoInfo);
-        pmt->SetTemporalCompression(FALSE);
-        pmt->SetSubtype(&MEDIASUBTYPE_YUY2);
-        pmt->SetSampleSize(pvi->bmiHeader.biSizeImage);
+
+        VideoCapability cap = {};
+        if (!ParseCapabilityFromMediaType(pmt, nullptr, &cap)) {
+            return VFW_E_INVALIDMEDIATYPE;
+        }
+
+        CAutoLock lock(m_pFilter->pStateLock());
+        if (IsConnected()) {
+            return VFW_E_ALREADY_CONNECTED;
+        }
+        m_width = cap.width;
+        m_height = cap.height;
+        m_fps = cap.fps;
+        DllLog("SetFormat %ldx%ld @%ldfps pid=%lu",
+            m_width, m_height, m_fps, GetCurrentProcessId());
+        return S_OK;
+    }
+
+    STDMETHODIMP GetFormat(AM_MEDIA_TYPE** ppmt) override {
+        if (!ppmt) {
+            return E_POINTER;
+        }
+        CMediaType mt;
+        HRESULT hr = GetMediaType(&mt);
+        if (FAILED(hr)) {
+            return hr;
+        }
+        *ppmt = CreateMediaType(&mt);
+        return *ppmt ? S_OK : E_OUTOFMEMORY;
+    }
+
+    STDMETHODIMP GetNumberOfCapabilities(int* piCount, int* piSize) override {
+        if (!piCount || !piSize) {
+            return E_POINTER;
+        }
+        *piCount = static_cast<int>(_countof(kCapabilities));
+        *piSize = sizeof(VIDEO_STREAM_CONFIG_CAPS);
+        return S_OK;
+    }
+
+    STDMETHODIMP GetStreamCaps(int iIndex, AM_MEDIA_TYPE** ppmt, BYTE* pSCC) override {
+        if (!ppmt || !pSCC) {
+            return E_POINTER;
+        }
+        if (iIndex < 0 || static_cast<size_t>(iIndex) >= _countof(kCapabilities)) {
+            return S_FALSE;
+        }
+
+        CMediaType mt;
+        HRESULT hr = BuildVideoMediaType(kCapabilities[iIndex], &mt);
+        if (FAILED(hr)) {
+            return hr;
+        }
+
+        *ppmt = CreateMediaType(&mt);
+        if (!*ppmt) {
+            return E_OUTOFMEMORY;
+        }
+
+        BuildVideoStreamCaps(kCapabilities[iIndex], reinterpret_cast<VIDEO_STREAM_CONFIG_CAPS*>(pSCC));
+        return S_OK;
+    }
+
+    STDMETHODIMP Set(REFGUID, DWORD, LPVOID, DWORD, LPVOID, DWORD) override {
+        return E_NOTIMPL;
+    }
+
+    STDMETHODIMP Get(
+        REFGUID guidPropSet,
+        DWORD dwPropID,
+        LPVOID,
+        DWORD,
+        LPVOID pPropData,
+        DWORD cbPropData,
+        DWORD* pcbReturned) override
+    {
+        if (guidPropSet != AMPROPSETID_Pin || dwPropID != AMPROPERTY_PIN_CATEGORY) {
+            return E_PROP_ID_UNSUPPORTED;
+        }
+        if (pcbReturned) {
+            *pcbReturned = sizeof(GUID);
+        }
+        if (!pPropData) {
+            return E_POINTER;
+        }
+        if (cbPropData < sizeof(GUID)) {
+            return E_UNEXPECTED;
+        }
+        *reinterpret_cast<GUID*>(pPropData) = PIN_CATEGORY_CAPTURE;
+        return S_OK;
+    }
+
+    STDMETHODIMP QuerySupported(REFGUID guidPropSet, DWORD dwPropID, DWORD* pTypeSupport) override {
+        if (!pTypeSupport) {
+            return E_POINTER;
+        }
+        if (guidPropSet != AMPROPSETID_Pin || dwPropID != AMPROPERTY_PIN_CATEGORY) {
+            return E_PROP_ID_UNSUPPORTED;
+        }
+        *pTypeSupport = 1;
         return S_OK;
     }
 
     HRESULT DecideBufferSize(IMemAllocator* pAlloc, ALLOCATOR_PROPERTIES* pReq) override {
-        ALLOCATOR_PROPERTIES actual;
+        ALLOCATOR_PROPERTIES actual = {};
         pReq->cBuffers = 2;
-        // Allocate for max resolution so resolution changes never overflow
-        pReq->cbBuffer = PEERCAM_MAX_WIDTH * PEERCAM_MAX_HEIGHT * 2;
-        return pAlloc->SetProperties(pReq, &actual);
+        pReq->cbBuffer = FrameBytes({ m_width, m_height, m_fps });
+        HRESULT hr = pAlloc->SetProperties(pReq, &actual);
+        DllLog("DecideBufferSize hr=0x%08X bufs=%d bufSize=%d pid=%lu",
+            (unsigned)hr, actual.cBuffers, actual.cbBuffer, GetCurrentProcessId());
+        return hr;
     }
 
     HRESULT FillBuffer(IMediaSample* pSample) override {
         BYTE* pData = nullptr;
         pSample->GetPointer(&pData);
-        long cbData = pSample->GetSize();
+        const long cbData = pSample->GetSize();
+        const VideoCapability cap = { m_width, m_height, m_fps };
+        const long actualBytes = FrameBytes(cap);
 
-        // Try to open shared memory if not yet open
+        // Self-throttle to DEFAULT_FPS using wall clock — never Sleep() on the DS thread
+        const DWORD frameMs = std::max<DWORD>(1, 1000 / static_cast<DWORD>(cap.fps));
+        const DWORD now = GetTickCount();
+        const DWORD elapsed = now - m_lastFrameTick;
+        if (m_lastFrameTick != 0 && elapsed < frameMs)
+            Sleep(frameMs - elapsed);
+        m_lastFrameTick = GetTickCount();
+
+        // Detect stale SHM: if the named mapping no longer exists, release our view
+        if (m_pShm) {
+            HANDLE probe = OpenFileMappingA(FILE_MAP_READ, FALSE, PEERCAM_SHM_NAME);
+            if (!probe) {
+                // Electron closed — release stale handles
+                CloseSharedMemory();
+            } else {
+                CloseHandle(probe);
+            }
+        }
+
+        // Try to open SHM if not yet open
         if (!m_pShm) {
-            m_hMapFile = OpenFileMappingA(FILE_MAP_READ, FALSE, PEERCAM_SHM_NAME);
-            if (m_hMapFile)
-                m_pShm = MapViewOfFile(m_hMapFile, FILE_MAP_READ, 0, 0, PEERCAM_SHM_SIZE);
-            if (!m_hEvent)
-                m_hEvent = OpenEventA(SYNCHRONIZE, FALSE, PEERCAM_EVENT_NAME);
-            if (!m_hMutex)
-                m_hMutex = OpenMutexA(SYNCHRONIZE, FALSE, PEERCAM_MUTEX_NAME);
+            TryOpenSharedMemory();
         }
 
         if (m_pShm) {
-            // Wait up to 50ms for a new frame signal
-            if (m_hEvent) WaitForSingleObject(m_hEvent, 50);
-            if (m_hMutex) WaitForSingleObject(m_hMutex, 16);
-            const PeerCamShmHeader* hdr = reinterpret_cast<const PeerCamShmHeader*>(m_pShm);
-            const DWORD w = hdr->width, h = hdr->height;
-            if (w > 0 && h > 0 && w <= PEERCAM_MAX_WIDTH && h <= PEERCAM_MAX_HEIGHT) {
-                if ((int)w == m_width && (int)h == m_height) {
-                    const BYTE* rgba = PeerCamPixelData(const_cast<void*>(m_pShm));
-                    const size_t needed = (size_t)w * h * 2;
-                    if ((long)needed <= cbData)
-                        RgbaToYuy2(rgba, pData, w, h);
-                } else {
-                    m_width  = (int)w;
-                    m_height = (int)h;
-                    ZeroMemory(pData, cbData);
-                }
+            if (!m_shmWasOpen) {
+                m_shmWasOpen = true;
+                DllLog("shm_connected Electron_running pid=%lu", GetCurrentProcessId());
             }
-            if (m_hMutex) ReleaseMutex(m_hMutex);
+            if (m_hEvent) {
+                WaitForSingleObject(m_hEvent, frameMs);
+            }
+            bool wroteLiveFrame = false;
+            const bool locked = !m_hMutex || WaitForSingleObject(m_hMutex, 16) == WAIT_OBJECT_0;
+            if (locked) {
+                const PeerCamShmHeader* hdr = reinterpret_cast<const PeerCamShmHeader*>(m_pShm);
+                const DWORD w = hdr->width;
+                const DWORD h = hdr->height;
+                const DWORD frameCount = hdr->frameCount;
+                if (w > 0 && h > 0 && w <= PEERCAM_MAX_WIDTH && h <= PEERCAM_MAX_HEIGHT) {
+                    if (frameCount != m_lastFrameCount) {
+                        m_lastFrameCount = frameCount;
+                        m_lastLiveFrameTick = GetTickCount();
+                    }
+                    if (m_lastLiveFrameTick != 0 && (GetTickCount() - m_lastLiveFrameTick) <= FRAME_STALE_TIMEOUT_MS) {
+                        if (actualBytes <= cbData) {
+                            const BYTE* rgba = PeerCamPixelData(m_pShm);
+                            ScaleRgbaToYuy2Letterboxed(
+                                rgba, static_cast<int>(w), static_cast<int>(h),
+                                pData, cap.width, cap.height, 0x1A, 0x1A, 0x2E);
+                            wroteLiveFrame = true;
+                            LogRenderMode(2, "live_frame");
+                        }
+                    } else {
+                        LogRenderMode(1, "stale_input");
+                    }
+                } else {
+                    LogRenderMode(1, "invalid_input");
+                }
+                if (m_hMutex) {
+                    ReleaseMutex(m_hMutex);
+                }
+            } else {
+                LogRenderMode(1, "mutex_busy");
+            }
+            if (wroteLiveFrame) {
+                m_fillCount++;
+                REFERENCE_TIME rtStart = m_rtSampleTime;
+                m_rtSampleTime += UNITS / cap.fps;
+                pSample->SetTime(&rtStart, &m_rtSampleTime);
+                pSample->SetActualDataLength(actualBytes);
+                pSample->SetSyncPoint(TRUE);
+                return S_OK;
+            }
         } else {
-            // Electron app not running — deliver standby frame at 30fps
-            Sleep(1000 / DEFAULT_FPS);
-            const size_t standbyBytes = (size_t)DEFAULT_WIDTH * DEFAULT_HEIGHT * 2;
-            if (g_standbyReady && (long)standbyBytes <= cbData)
-                CopyMemory(pData, g_standbyYuy2, standbyBytes);
-            else
+            if (m_shmWasOpen) {
+                m_shmWasOpen = false;
+                DllLog("shm_disconnected Electron_closed pid=%lu", GetCurrentProcessId());
+            }
+            LogRenderMode(0, "no_shm");
+            if (m_fillCount == 0)
+                DllLog("standby_mode no_Electron pid=%lu", GetCurrentProcessId());
+            if (g_standbyReady && actualBytes <= cbData) {
+                if (cap.width == DEFAULT_WIDTH && cap.height == DEFAULT_HEIGHT) {
+                    CopyMemory(pData, g_standbyYuy2, actualBytes);
+                } else {
+                    ScaleRgbaToYuy2Letterboxed(
+                        g_standbyRgba, DEFAULT_WIDTH, DEFAULT_HEIGHT,
+                        pData, cap.width, cap.height, 0x1A, 0x1A, 0x2E);
+                }
+                LogRenderMode(1, "standby");
+            } else {
                 ZeroMemory(pData, cbData);
+            }
         }
+        if (m_pShm) {
+            if (g_standbyReady && actualBytes <= cbData) {
+                if (cap.width == DEFAULT_WIDTH && cap.height == DEFAULT_HEIGHT) {
+                    CopyMemory(pData, g_standbyYuy2, actualBytes);
+                } else {
+                    ScaleRgbaToYuy2Letterboxed(
+                        g_standbyRgba, DEFAULT_WIDTH, DEFAULT_HEIGHT,
+                        pData, cap.width, cap.height, 0x1A, 0x1A, 0x2E);
+                }
+                LogRenderMode(1, "standby");
+            } else {
+                ZeroMemory(pData, cbData);
+            }
+        }
+        m_fillCount++;
 
         REFERENCE_TIME rtStart = m_rtSampleTime;
-        m_rtSampleTime += UNITS / DEFAULT_FPS;
+        m_rtSampleTime += UNITS / cap.fps;
         pSample->SetTime(&rtStart, &m_rtSampleTime);
+        pSample->SetActualDataLength(actualBytes);
         pSample->SetSyncPoint(TRUE);
         return S_OK;
     }
 
 private:
+    void TryOpenSharedMemory() {
+        if (!m_hMapFile) {
+            m_hMapFile = OpenFileMappingA(FILE_MAP_READ, FALSE, PEERCAM_SHM_NAME);
+        }
+        if (m_hMapFile && !m_pShm) {
+            m_pShm = MapViewOfFile(m_hMapFile, FILE_MAP_READ, 0, 0, PEERCAM_SHM_SIZE);
+        }
+        if (!m_hEvent) {
+            m_hEvent = OpenEventA(SYNCHRONIZE, FALSE, PEERCAM_EVENT_NAME);
+        }
+        if (!m_hMutex) {
+            m_hMutex = OpenMutexA(SYNCHRONIZE | MUTEX_MODIFY_STATE, FALSE, PEERCAM_MUTEX_NAME);
+        }
+    }
+
+    void CloseSharedMemory() {
+        if (m_pShm) {
+            UnmapViewOfFile(m_pShm);
+            m_pShm = nullptr;
+        }
+        if (m_hMapFile) {
+            CloseHandle(m_hMapFile);
+            m_hMapFile = nullptr;
+        }
+        if (m_hEvent) {
+            CloseHandle(m_hEvent);
+            m_hEvent = nullptr;
+        }
+        if (m_hMutex) {
+            CloseHandle(m_hMutex);
+            m_hMutex = nullptr;
+        }
+    }
+
+    void LogRenderMode(int mode, const char* reason) {
+        if (m_lastRenderMode == mode) {
+            return;
+        }
+        m_lastRenderMode = mode;
+        DllLog("render_mode %s pid=%lu", reason, GetCurrentProcessId());
+    }
+
     HANDLE m_hMapFile, m_hEvent, m_hMutex;
     void*  m_pShm;
     DWORD  m_lastFrameCount;
-    int    m_width, m_height;
+    DWORD  m_lastFrameTick;
+    DWORD  m_lastLiveFrameTick;
+    LONG   m_width, m_height, m_fps;
+    bool   m_shmWasOpen;
+    DWORD  m_fillCount;
+    int    m_lastRenderMode;
     REFERENCE_TIME m_rtSampleTime = 0;
 };
 
@@ -533,6 +993,25 @@ extern "C" BOOL WINAPI DllEntryPoint(HINSTANCE, ULONG, LPVOID);
 BOOL WINAPI DllMain(HINSTANCE hDll, DWORD dwReason, LPVOID lpReserved) {
     if (dwReason == DLL_PROCESS_ATTACH) {
         g_hInstance = hDll;
+        OpenDllLog();
+        DllLog("DLL_PROCESS_ATTACH pid=%lu exe=%ls", GetCurrentProcessId(),
+            []() { static wchar_t p[MAX_PATH]={}; GetModuleFileNameW(nullptr,p,MAX_PATH); return p; }());
+        // Self-repair: if our Video Input Device category entry is missing, re-register.
+        // This handles upgrades or manual registry cleanups that leave the DLL loaded
+        // but unregistered, causing Chrome/Zoom to not see the device.
+        wchar_t clsidString[64] = {};
+        StringFromGUID2(CLSID_PeerCamVCam, clsidString, _countof(clsidString));
+        wchar_t checkPath[192] = {};
+        swprintf_s(checkPath,
+            L"Software\\Classes\\CLSID\\{860BB310-5D01-11d0-BD3B-00A0C911CE86}\\Instance\\%ls",
+            clsidString);
+        HKEY hk = nullptr;
+        const bool missing = (RegOpenKeyExW(HKEY_CURRENT_USER, checkPath, 0, KEY_READ, &hk) != ERROR_SUCCESS);
+        if (hk) RegCloseKey(hk);
+        if (missing) {
+            RegisterComClass();
+            RegisterVideoInputCategory(TRUE);
+        }
     }
     return DllEntryPoint(hDll, dwReason, lpReserved);
 }

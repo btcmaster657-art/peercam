@@ -462,7 +462,7 @@ export default function App() {
               <p style={s.hint}>
                 {vcamObs
                   ? <>Virtual camera active — select <strong style={{ color: '#f4f4f5' }}>OBS Virtual Camera</strong> in Chrome, Zoom, Teams, or any app.</>
-                  : <>Virtual camera active — select <strong style={{ color: '#f4f4f5' }}>PeerCam Virtual Camera</strong> in Zoom, Teams, or native apps.</>
+                  : <>Virtual camera active — select <strong style={{ color: '#f4f4f5' }}>PeerCam Virtual Camera</strong> in Chrome, Zoom, Teams, or any app.</>
                 }
               </p>
             )}

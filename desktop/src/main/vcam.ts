@@ -1,5 +1,6 @@
 import path from 'path'
 import { app } from 'electron'
+import fs from 'fs'
 
 interface VCamAddon {
   start(): { ok: boolean; obs: boolean }
@@ -14,20 +15,23 @@ function loadAddon(): VCamAddon | null {
     console.log('[vcam] platform=darwin — native addon skipped')
     return null
   }
-  // Native addons cannot be loaded from inside an asar archive.
-  // process.resourcesPath points to the unpacked resources dir outside the asar.
   const addonPath = app.isPackaged
     ? path.join(process.resourcesPath, 'native/build/Release/vcam.node')
     : path.join(__dirname, '../../native/build/Release/vcam.node')
   console.log(`[vcam] loading addon from ${addonPath}`)
+  console.log(`[vcam] process ABI=${process.versions.modules} node=${process.versions.node} electron=${process.versions.electron} execPath=${process.execPath}`)
+  const exists = (() => { try { return fs.existsSync(addonPath) } catch { return 'unknown' } })()
+  console.log(`[vcam] addon file exists=${exists}`)
+  if (!exists) return null
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const loaded = require(addonPath) as VCamAddon
     console.log('[vcam] addon loaded ok')
     return loaded
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e)
-    console.warn(`[vcam] addon load failed: ${msg}`)
+    const err = e instanceof Error ? e : new Error(String(e))
+    console.warn(`[vcam] addon load failed: ${err.message}`)
+    if (err.stack) console.warn(`[vcam] addon load stack: ${err.stack}`)
     return null
   }
 }

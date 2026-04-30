@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, session } from 'electron'
+import { app, BrowserWindow, ipcMain, Menu, Tray, nativeImage, session } from 'electron'
 import path from 'path'
 import fs from 'fs'
 import { startVirtualCamera, stopVirtualCamera, pushFrame } from './vcam'
@@ -27,8 +27,9 @@ function writeLog(level: 'INFO' | 'WARN' | 'ERROR', ...args: unknown[]) {
 }
 
 rotateLogs()
-writeLog('INFO', `PeerCam starting v${app.getVersion()} pid=${process.pid} platform=${process.platform} arch=${process.arch} electron=${process.versions.electron} node=${process.versions.node}`)
+writeLog('INFO', `PeerCam starting v${app.getVersion()} pid=${process.pid} platform=${process.platform} arch=${process.arch} electron=${process.versions.electron} node=${process.versions.node} modules_abi=${process.versions.modules}`)
 writeLog('INFO', `log file: ${LOG_PATH}`)
+writeLog('INFO', `resourcesPath=${process.resourcesPath ?? 'n/a'} isPackaged=${app.isPackaged}`)
 
 const _consoleLog   = console.log.bind(console)
 const _consoleWarn  = console.warn.bind(console)
@@ -38,12 +39,15 @@ console.warn  = (...a) => { _consoleWarn(...a);  writeLog('WARN',  ...a) }
 console.error = (...a) => { _consoleError(...a); writeLog('ERROR', ...a) }
 
 // ── Process-level error traps ─────────────────────────────────────────────────
-process.on('uncaughtException', (err) => {
-  writeLog('ERROR', `[main] uncaughtException: ${err.message}\n${err.stack ?? ''}`)
+process.on('uncaughtException', (err, origin) => {
+  writeLog('ERROR', `[main] uncaughtException origin=${origin} message="${err.message}"\n${err.stack ?? ''}`)
 })
-process.on('unhandledRejection', (reason) => {
+process.on('unhandledRejection', (reason, promise) => {
+  void promise
   writeLog('ERROR', `[main] unhandledRejection: ${reason instanceof Error ? reason.stack ?? reason.message : String(reason)}`)
 })
+process.on('SIGTERM', () => writeLog('WARN', '[main] SIGTERM received'))
+process.on('SIGINT',  () => writeLog('WARN', '[main] SIGINT received'))
 
 // ── Window ────────────────────────────────────────────────────────────────────
 function createWindow() {
@@ -75,8 +79,10 @@ function createWindow() {
   win.webContents.on('did-fail-load', (_e, code, desc, url) =>
     writeLog('ERROR', `[main] renderer did-fail-load code=${code} desc="${desc}" url=${url}`))
 
-  win.webContents.on('render-process-gone', (_e, details) =>
-    writeLog('ERROR', `[main] renderer process gone — reason=${details.reason} exitCode=${details.exitCode}`))
+  win.webContents.on('render-process-gone', (_e, details) => {
+    writeLog('ERROR', `[main] renderer process gone — reason=${details.reason} exitCode=${details.exitCode}`)
+    writeLog('ERROR', `[main] renderer crash details: ${JSON.stringify(details)}`)
+  })
 
   win.webContents.on('unresponsive', () =>
     writeLog('WARN', '[main] renderer became unresponsive'))
@@ -141,7 +147,16 @@ ipcMain.handle('vcam:stop', async () => {
   }
 })
 
+let firstFrameLogged = false
 ipcMain.handle('vcam:pushFrame', (_e, width: number, height: number, rgba: Uint8Array) => {
+  if (!firstFrameLogged) {
+    firstFrameLogged = true
+    writeLog('INFO', `[ipc] vcam:pushFrame — first frame received ${width}x${height} bytes=${rgba?.byteLength ?? 'n/a'}`)
+  }
+  if (!width || !height || !rgba?.byteLength) {
+    writeLog('WARN', `[ipc] vcam:pushFrame — invalid args width=${width} height=${height} bytes=${rgba?.byteLength ?? 'n/a'}`)
+    return
+  }
   try {
     pushFrame(width, height, Buffer.from(rgba.buffer, rgba.byteOffset, rgba.byteLength))
   } catch (e: unknown) {

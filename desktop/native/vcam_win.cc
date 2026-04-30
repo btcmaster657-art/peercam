@@ -434,7 +434,8 @@ Napi::Value PushFrame(const Napi::CallbackInfo& info) {
     const uint8_t* rgba = buf.Data();
 
     // ── PeerCam DirectShow SHM ────────────────────────────────────────────────
-    if (g_pcMutex) WaitForSingleObject(g_pcMutex, 16);
+    const bool locked = !g_pcMutex || WaitForSingleObject(g_pcMutex, 16) == WAIT_OBJECT_0;
+    if (!locked) return env.Undefined();
     PeerCamShmHeader* pcHdr = reinterpret_cast<PeerCamShmHeader*>(g_pcShm);
     pcHdr->width  = width;
     pcHdr->height = height;
